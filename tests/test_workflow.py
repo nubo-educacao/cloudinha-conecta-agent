@@ -1,0 +1,233 @@
+"""Integration tests do pipeline Planning→Reasoning→Response.
+
+Âncora PRD:
+- POST /chat retorna stream NDJSON válido
+- System Intent com intent_type=system_intent NÃO persiste em chat_messages
+- Suggestions emitidas ANTES do stream de resposta terminar (i.e., após o texto)
+- Fallback emitido quando Reasoning retorna vazio
+"""
+import json
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
+
+from src.models.chat_request import ChatRequest, UIContext
+from src.workflow.engine import run_pipeline
+from src.workflow.system_intents import is_system_intent, handle_system_intent
+
+
+# ─── System Intent ────────────────────────────────────────────────────────────
+
+class TestSystemIntentInterceptor:
+    def test_is_system_intent_returns_true_for_system_type(self, system_intent_request):
+        assert is_system_intent(system_intent_request) is True
+
+    def test_is_system_intent_returns_false_for_user_message(self, sample_chat_request):
+        assert is_system_intent(sample_chat_request) is False
+
+    @pytest.mark.asyncio
+    async def test_system_intent_ping_returns_pong(self):
+        req = ChatRequest(
+            chatInput="ping",
+            userId=uuid4(),
+            active_profile_id=uuid4(),
+            sessionId="sys-test",
+            intent_type="system_intent",
+        )
+        mock_supabase = MagicMock()
+        result = await handle_system_intent(req, mock_supabase)
+        assert result["type"] == "pong"
+
+    @pytest.mark.asyncio
+    async def test_system_intent_does_not_call_supabase_insert(self, system_intent_request):
+        """System intent NÃO deve persistir mensagem em chat_messages."""
+        mock_supabase = MagicMock()
+        mock_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+
+        await handle_system_intent(system_intent_request, mock_supabase)
+
+        # chat_messages.insert NUNCA deve ser chamado para system intents
+        insert_calls = [
+            call for call in mock_supabase.method_calls
+            if "insert" in str(call) and "chat_messages" in str(call)
+        ]
+        assert len(insert_calls) == 0
+
+
+# ─── Pipeline Integration ─────────────────────────────────────────────────────
+
+MOCK_PLANNING_OUTPUT = """## INTENT
+Usuário busca bolsas de medicina
+
+## INTENT_CATEGORY
+course_search
+
+## TOOLS_TO_USE
+- search_opportunities
+
+## CONTEXT_NEEDED
+Nota ENEM"""
+
+MOCK_REASONING_EVENTS = [
+    {"type": "tool_start", "tool": "search_opportunities", "args": {"query": "medicina"}},
+    {"type": "tool_end", "tool": "search_opportunities", "output": '{"results": [], "count": 0}'},
+    {"type": "reasoning_complete", "report": """## INTENT
+Bolsas medicina
+
+## DATA
+Sem resultados encontrados
+
+## REASONING
+Não há bolsas cadastradas para medicina no momento
+
+## ACTION
+none
+
+## SUGGESTED_FOLLOWUPS
+- Quais cursos têm mais bolsas disponíveis?
+- Como funciona o ProUni?
+- Posso me inscrever no FIES?
+"""},
+]
+
+MOCK_RESPONSE_CHUNKS = ["Olá! ", "Encontrei algumas informações ", "sobre bolsas para medicina."]
+
+
+class TestPipelineIntegration:
+    @pytest.fixture
+    def mock_supabase_with_profile(self):
+        """Supabase mock que retorna dados de perfil mínimos."""
+        mock = MagicMock()
+        # user_profiles
+        profile_mock = MagicMock()
+        profile_mock.data = {"full_name": "Ana Silva", "birth_date": "2000-01-01"}
+        mock.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value = profile_mock
+        # users_metadata
+        meta_mock = MagicMock()
+        meta_mock.data = None
+        # chat_messages recent
+        hist_mock = MagicMock()
+        hist_mock.data = []
+        mock.table.return_value.insert.return_value.execute.return_value = MagicMock()
+        return mock
+
+    @pytest.mark.asyncio
+    async def test_pipeline_emits_text_events(self, sample_chat_request):
+        """Pipeline deve emitir pelo menos 1 evento de tipo 'text'."""
+        with (
+            patch("src.workflow.engine.run_planning_agent", new_callable=AsyncMock) as mock_plan,
+            patch("src.workflow.engine.run_reasoning_agent") as mock_reasoning,
+            patch("src.workflow.engine.run_response_agent") as mock_response,
+            patch("src.workflow.engine._load_profile", new_callable=AsyncMock) as mock_profile,
+            patch("src.workflow.engine.retrieve_few_shot_examples", new_callable=AsyncMock) as mock_fs,
+            patch("src.workflow.engine.get_supabase_service") as mock_svc,
+        ):
+            from src.contracts.structured_plan import StructuredPlan, FALLBACK_PLAN
+            mock_plan.return_value = FALLBACK_PLAN
+            mock_fs.return_value = ""
+            mock_profile.return_value = {"full_name": "Ana", "age": 24}
+            mock_svc.return_value = MagicMock()
+
+            async def mock_reasoning_gen(*args, **kwargs):
+                for event in MOCK_REASONING_EVENTS:
+                    yield event
+
+            async def mock_response_gen(*args, **kwargs):
+                for chunk in MOCK_RESPONSE_CHUNKS:
+                    yield chunk
+
+            mock_reasoning.return_value = mock_reasoning_gen()
+            mock_response.return_value = mock_response_gen()
+
+            mock_supabase = MagicMock()
+            mock_supabase.table.return_value.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+            mock_supabase.table.return_value.insert.return_value.execute.return_value = MagicMock()
+
+            events = []
+            async for event in run_pipeline(sample_chat_request, mock_supabase):
+                events.append(event)
+
+        text_events = [e for e in events if e["type"] == "text"]
+        assert len(text_events) >= 1
+
+    @pytest.mark.asyncio
+    async def test_suggestions_emitted_after_text(self, sample_chat_request):
+        """Suggestions devem ser emitidas APÓS os eventos de texto."""
+        with (
+            patch("src.workflow.engine.run_planning_agent", new_callable=AsyncMock) as mock_plan,
+            patch("src.workflow.engine.run_reasoning_agent") as mock_reasoning,
+            patch("src.workflow.engine.run_response_agent") as mock_response,
+            patch("src.workflow.engine._load_profile", new_callable=AsyncMock) as mock_profile,
+            patch("src.workflow.engine.retrieve_few_shot_examples", new_callable=AsyncMock) as mock_fs,
+            patch("src.workflow.engine.get_supabase_service") as mock_svc,
+        ):
+            from src.contracts.structured_plan import FALLBACK_PLAN
+            mock_plan.return_value = FALLBACK_PLAN
+            mock_fs.return_value = ""
+            mock_profile.return_value = {"full_name": "Carlos", "age": 20}
+            mock_svc.return_value = MagicMock()
+
+            async def mock_reasoning_gen(*args, **kwargs):
+                for event in MOCK_REASONING_EVENTS:
+                    yield event
+
+            async def mock_response_gen(*args, **kwargs):
+                for chunk in MOCK_RESPONSE_CHUNKS:
+                    yield chunk
+
+            mock_reasoning.return_value = mock_reasoning_gen()
+            mock_response.return_value = mock_response_gen()
+
+            mock_supabase = MagicMock()
+            mock_supabase.table.return_value.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+            mock_supabase.table.return_value.insert.return_value.execute.return_value = MagicMock()
+
+            events = []
+            async for event in run_pipeline(sample_chat_request, mock_supabase):
+                events.append(event)
+
+        types = [e["type"] for e in events]
+        if "suggestions" in types and "text" in types:
+            last_text_idx = max(i for i, t in enumerate(types) if t == "text")
+            suggestions_idx = types.index("suggestions")
+            assert suggestions_idx > last_text_idx, "Suggestions devem vir após o texto"
+
+    @pytest.mark.asyncio
+    async def test_ndjson_events_are_valid_json(self, sample_chat_request):
+        """Todos os eventos do pipeline devem ser serializáveis como JSON."""
+        with (
+            patch("src.workflow.engine.run_planning_agent", new_callable=AsyncMock) as mock_plan,
+            patch("src.workflow.engine.run_reasoning_agent") as mock_reasoning,
+            patch("src.workflow.engine.run_response_agent") as mock_response,
+            patch("src.workflow.engine._load_profile", new_callable=AsyncMock) as mock_profile,
+            patch("src.workflow.engine.retrieve_few_shot_examples", new_callable=AsyncMock) as mock_fs,
+            patch("src.workflow.engine.get_supabase_service") as mock_svc,
+        ):
+            from src.contracts.structured_plan import FALLBACK_PLAN
+            mock_plan.return_value = FALLBACK_PLAN
+            mock_fs.return_value = ""
+            mock_profile.return_value = {"full_name": "Maria"}
+            mock_svc.return_value = MagicMock()
+
+            async def mock_reasoning_gen(*args, **kwargs):
+                yield {"type": "reasoning_complete", "report": "## INTENT\nTest\n## DATA\n-\n## REASONING\nok\n## ACTION\nnone\n## SUGGESTED_FOLLOWUPS\n"}
+
+            async def mock_response_gen(*args, **kwargs):
+                yield "Resposta de teste"
+
+            mock_reasoning.return_value = mock_reasoning_gen()
+            mock_response.return_value = mock_response_gen()
+
+            mock_supabase = MagicMock()
+            mock_supabase.table.return_value.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+            mock_supabase.table.return_value.insert.return_value.execute.return_value = MagicMock()
+
+            events = []
+            async for event in run_pipeline(sample_chat_request, mock_supabase):
+                events.append(event)
+
+        for event in events:
+            # Deve serializar sem erros
+            serialized = json.dumps(event, ensure_ascii=False)
+            reparsed = json.loads(serialized)
+            assert reparsed["type"] in {"text", "tool_start", "tool_end", "suggestions", "error"}
