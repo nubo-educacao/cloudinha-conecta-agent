@@ -1,10 +1,17 @@
-"""Nubo Tools MCP Server.
+"""Nubo Tools MCP Server — Catálogo Educacional (Read-Only).
 
-Expõe as capacidades de dados do Nubo Conecta como ferramentas MCP.
+Expõe ferramentas de consulta ao catálogo público do Nubo Conecta via MCP.
 Pode ser usado por:
   - Cloudinha Conecta Agent (como MCP Client)
   - Claude Desktop / Cursor (direto via HTTP ou stdio)
   - Agentes de Dev para debugging e inspeção de dados
+
+SEGURANÇA (LGPD):
+  - Ferramentas de dados do USUÁRIO (perfil, match, candidaturas) NÃO estão aqui.
+  - Elas vivem em src/tools/user_data.py e são chamadas diretamente pelo engine
+    com o profile_id da requisição autenticada (anti-forge).
+  - A tool search_educational_catalog valida SQL contra uma blocklist de tabelas
+    privadas antes de executar.
 
 Execução standalone:
   python -m src.mcp.server                    # stdio (Claude Desktop)
@@ -12,6 +19,7 @@ Execução standalone:
 """
 import json
 import logging
+import re
 from mcp.server.fastmcp import FastMCP
 
 from src.services.supabase_client import get_supabase_service
@@ -22,14 +30,92 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP(
     name="nubo-tools",
     instructions=(
-        "Ferramentas de dados do Nubo Conecta. "
-        "Use para buscar oportunidades educacionais, perfis de estudantes, "
-        "resultados de match e informações de CEP no contexto brasileiro."
+        "Ferramentas de consulta ao catálogo educacional do Nubo Conecta. "
+        "Use para buscar oportunidades educacionais (bolsas, cursos, programas) "
+        "e instituições de ensino. Dados pessoais do aluno NÃO estão disponíveis "
+        "aqui — eles são injetados automaticamente pelo backend."
     ),
 )
 
+# ─── Blocklist LGPD ──────────────────────────────────────────────────────────
+
+_BLOCKED_TABLES = [
+    "user_profiles",
+    "user_preferences",
+    "user_enem_scores",
+    "user_income",
+    "users_metadata",
+    "user_opportunity_matches",
+    "student_applications",
+    "chat_messages",
+    "agent_errors",
+    "agent_turns",
+    "agent_prompts",
+    "auth",
+]
+
+_BLOCKED_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(t) for t in _BLOCKED_TABLES) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _validate_catalog_query(sql_query: str) -> str | None:
+    """Valida se a query NÃO referencia tabelas privadas.
+
+    Returns:
+        None se válida, ou mensagem de erro se bloqueada.
+    """
+    match = _BLOCKED_PATTERN.search(sql_query)
+    if match:
+        return (
+            f"Acesso negado: a tabela '{match.group()}' contém dados pessoais "
+            "protegidos por LGPD. Use apenas tabelas do catálogo educacional "
+            "(v_unified_opportunities, institutions, partners, courses, etc.)."
+        )
+    return None
+
 
 # ─── Tools ────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def search_educational_catalog(sql_query: str) -> str:
+    """Executa uma consulta SQL read-only no catálogo educacional do Nubo.
+
+    Use esta ferramenta para buscar cursos, bolsas, programas e instituições
+    usando queries SQL livres. Você tem acesso às tabelas:
+    - v_unified_opportunities (vagas MEC + parceiros consolidados)
+    - institutions (universidades, faculdades, institutos)
+    - partners (parceiros do Nubo)
+    - courses (cursos disponíveis)
+    - partner_opportunities (vagas de parceiros)
+    - knowledge_documents (base de conhecimento)
+    - important_dates (calendário educacional)
+
+    IMPORTANTE: Tabelas de dados pessoais (user_profiles, users_metadata, etc.)
+    NÃO são acessíveis por esta ferramenta.
+
+    Args:
+        sql_query: Query SQL SELECT para executar no catálogo educacional.
+
+    Returns:
+        JSON com os resultados da query ou mensagem de erro.
+    """
+    # Validação LGPD
+    error = _validate_catalog_query(sql_query)
+    if error:
+        logger.warning(f"search_educational_catalog BLOQUEOU query: {sql_query[:100]}")
+        return json.dumps({"error": error})
+
+    supabase = get_supabase_service()
+    try:
+        response = supabase.rpc("execute_readonly_query", {"query_text": sql_query}).execute()
+        data = response.data or []
+        return json.dumps({"results": data, "count": len(data)}, ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error(f"search_educational_catalog error: {e}")
+        return json.dumps({"error": str(e), "results": []})
+
 
 @mcp.tool()
 async def search_opportunities(
@@ -67,84 +153,6 @@ async def search_opportunities(
 
 
 @mcp.tool()
-async def get_student_profile(profile_id: str) -> str:
-    """Obtém perfil e preferências do estudante ativo.
-
-    Args:
-        profile_id: UUID do perfil ativo (active_profile_id da requisição)
-
-    Returns:
-        JSON com dados do perfil e preferências educacionais.
-    """
-    supabase = get_supabase_service()
-    try:
-        profile_resp = (
-            supabase.table("user_profiles")
-            .select("id, full_name, birth_date")
-            .eq("id", profile_id)
-            .single()
-            .execute()
-        )
-        prefs_resp = (
-            supabase.table("user_preferences")
-            .select("enem_score, family_income_per_capita, course_interest, quota_types, state_preference")
-            .eq("user_id", profile_id)
-            .maybe_single()
-            .execute()
-        )
-        result = {
-            "profile": profile_resp.data,
-            "preferences": prefs_resp.data,
-        }
-        return json.dumps(result, ensure_ascii=False, default=str)
-    except Exception as e:
-        logger.error(f"get_student_profile error: {e}")
-        return json.dumps({"error": str(e)})
-
-
-@mcp.tool()
-async def lookup_cep(cep: str) -> str:
-    """Consulta endereço a partir de um CEP brasileiro via ViaCEP.
-
-    Args:
-        cep: CEP com 8 dígitos (com ou sem hífen)
-
-    Returns:
-        JSON com logradouro, bairro, localidade e UF.
-    """
-    result = await _cep_lookup(cep)
-    return json.dumps(result, ensure_ascii=False)
-
-
-@mcp.tool()
-async def get_match_results(profile_id: str, limit: int = 5) -> str:
-    """Busca as oportunidades com maior match score para o perfil ativo.
-
-    Args:
-        profile_id: UUID do perfil ativo
-        limit: Máximo de resultados (padrão: 5)
-
-    Returns:
-        JSON com lista de matches ordenados por score decrescente.
-    """
-    supabase = get_supabase_service()
-    try:
-        response = (
-            supabase.table("user_opportunity_matches")
-            .select("unified_opportunity_id, match_score, match_details")
-            .eq("profile_id", profile_id)
-            .order("match_score", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        data = response.data or []
-        return json.dumps({"matches": data, "count": len(data)}, ensure_ascii=False, default=str)
-    except Exception as e:
-        logger.error(f"get_match_results error: {e}")
-        return json.dumps({"error": str(e), "matches": []})
-
-
-@mcp.tool()
 async def search_institutions(query: str, state: str = "") -> str:
     """Busca instituições de ensino (universidades, faculdades, institutos).
 
@@ -172,6 +180,20 @@ async def search_institutions(query: str, state: str = "") -> str:
     except Exception as e:
         logger.error(f"search_institutions error: {e}")
         return json.dumps({"error": str(e), "institutions": []})
+
+
+@mcp.tool()
+async def lookup_cep(cep: str) -> str:
+    """Consulta endereço a partir de um CEP brasileiro via ViaCEP.
+
+    Args:
+        cep: CEP com 8 dígitos (com ou sem hífen)
+
+    Returns:
+        JSON com logradouro, bairro, localidade e UF.
+    """
+    result = await _cep_lookup(cep)
+    return json.dumps(result, ensure_ascii=False)
 
 
 # ─── Entrypoint ───────────────────────────────────────────────────────────────

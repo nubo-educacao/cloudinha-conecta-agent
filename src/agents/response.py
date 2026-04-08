@@ -1,3 +1,11 @@
+"""Response Agent — A Voz da Cloudinha.
+
+Recebe o Reasoning Report e o contexto mínimo, formula a resposta empática
+final em streaming. Zero tools. Grounded by design.
+
+Sessão: SupabaseSessionService (histórico real do chat).
+Modelo: gemini-2.0-flash.
+"""
 import logging
 from typing import AsyncGenerator
 from google import genai
@@ -8,7 +16,8 @@ from src.contracts.reasoning_report import ReasoningReport
 
 logger = logging.getLogger(__name__)
 
-RESPONSE_SYSTEM_PROMPT = """Você é a Cloudinha, assistente educacional empática do Nubo Conecta.
+# Fallback usado apenas quando o banco (agent_prompts) está indisponível
+_RESPONSE_FALLBACK_PROMPT = """Você é a Cloudinha, assistente educacional empática do Nubo Conecta.
 
 Sua função é entregar a RESPOSTA FINAL ao usuário em português brasileiro, de forma:
 - Amigável e encorajadora (você fala com estudantes em busca de oportunidades)
@@ -25,12 +34,20 @@ async def run_response_agent(
     reasoning_report: ReasoningReport,
     lean_context: str,
     user_message: str,
+    system_prompt: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Executa o Response Agent e faz streaming da resposta final.
 
     Emite chunks de texto puro (str) para o engine montar os TextEvents.
+
+    Args:
+        reasoning_report: Relatório parseado do Reasoning Agent
+        lean_context: Contexto mínimo do usuário
+        user_message: Mensagem original do usuário
+        system_prompt: System instruction dinâmica do banco. Se None, usa fallback.
     """
     client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+    instruction = system_prompt or _RESPONSE_FALLBACK_PROMPT
 
     prompt = _build_response_prompt(reasoning_report, lean_context, user_message)
 
@@ -38,7 +55,7 @@ async def run_response_agent(
         model=settings.RESPONSE_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
-            system_instruction=RESPONSE_SYSTEM_PROMPT,
+            system_instruction=instruction,
             temperature=0.7,
             max_output_tokens=1024,
         ),

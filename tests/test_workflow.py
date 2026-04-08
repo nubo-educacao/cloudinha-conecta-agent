@@ -15,6 +15,12 @@ from src.models.chat_request import ChatRequest, UIContext
 from src.workflow.engine import run_pipeline
 from src.workflow.system_intents import is_system_intent, handle_system_intent
 
+# Mock global para prompt_service (impede chamada ao Supabase em testes)
+@pytest.fixture(autouse=True)
+def mock_prompt_service():
+    with patch("src.workflow.engine.resolve_system_prompt", return_value="") as mock:
+        yield mock
+
 
 # ─── System Intent ────────────────────────────────────────────────────────────
 

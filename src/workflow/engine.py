@@ -1,7 +1,8 @@
 """Orquestrador do pipeline Planning → Reasoning → Response.
 
-Implementa o padrão de Resiliência V0: retry manual com asyncio.sleep backoff exponencial,
-log de erros na tabela agent_errors, e fallbacks empáticos em pt-BR.
+Implementa o padrão de Resiliência V1: retry manual com asyncio.sleep backoff exponencial,
+log de erros na tabela agent_errors, fallbacks empáticos em pt-BR,
+e resolução dinâmica de prompts via agent_prompts (Remote Config).
 """
 import asyncio
 import json
@@ -20,6 +21,7 @@ from src.contracts.structured_plan import FALLBACK_PLAN, StructuredPlan
 from src.models.chat_events import ErrorEvent, SuggestionsEvent, TextEvent
 from src.models.chat_request import ChatRequest
 from src.services.context_service import build_lean_context
+from src.services.prompt_service import resolve_system_prompt
 from src.services.retrieval_service import retrieve_few_shot_examples
 from src.services.session_service import SupabaseSessionService
 from src.config import settings
@@ -69,6 +71,11 @@ async def run_pipeline(
         ui_context=request.ui_context,
     )
 
+    # ── Resolver prompts dinâmicos (Remote Config) ────────────────────────────
+    planning_prompt = resolve_system_prompt(supabase_service, "planning", fallback="")
+    reasoning_prompt = resolve_system_prompt(supabase_service, "reasoning", fallback="")
+    response_prompt = resolve_system_prompt(supabase_service, "response", fallback="")
+
     # Persistir mensagem do usuário
     session_svc.persist_user_message(request.chatInput)
 
@@ -84,6 +91,9 @@ async def run_pipeline(
                 supabase_anon=supabase_anon,
                 supabase_service=supabase_service,
                 mcp_url=settings.MCP_SERVER_URL,
+                planning_prompt=planning_prompt or None,
+                reasoning_prompt=reasoning_prompt or None,
+                response_prompt=response_prompt or None,
             ):
                 has_sent_events = True
                 if event.get("type") == "text":
@@ -138,6 +148,9 @@ async def _execute_pipeline(
     supabase_anon: Client,
     supabase_service: Client,
     mcp_url: str = "",
+    planning_prompt: str | None = None,
+    reasoning_prompt: str | None = None,
+    response_prompt: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Execução single-attempt do pipeline. Levanta exceções para o retry wrapper tratar."""
 
@@ -146,6 +159,7 @@ async def _execute_pipeline(
         plan = await run_planning_agent(
             user_message=request.chatInput,
             lean_context=lean_context,
+            system_prompt=planning_prompt,
         )
     except Exception as e:
         logger.error(f"Planning agent error: {e}")
@@ -171,6 +185,7 @@ async def _execute_pipeline(
             lean_context=lean_context,
             few_shot_examples=few_shot,
             mcp_url=mcp_url,
+            system_prompt=reasoning_prompt,
         ):
             if event.get("type") == "reasoning_complete":
                 reasoning_text = event.get("report", "")
@@ -216,6 +231,7 @@ async def _execute_pipeline(
             reasoning_report=report,
             lean_context=lean_context,
             user_message=request.chatInput,
+            system_prompt=response_prompt,
         ):
             yield TextEvent(content=text_chunk).model_dump()
     except Exception as e:

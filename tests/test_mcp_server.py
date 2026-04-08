@@ -1,11 +1,13 @@
 """TDD: Testes do nubo-tools MCP Server.
 
 Âncoras de verificação:
-  1. FastMCP registra as 5 tools esperadas
+  1. FastMCP registra exatamente as 4 tools públicas do catálogo (sem tools privadas de usuário)
   2. Cada tool tem nome e descrição não-vazia
   3. Tool schemas são válidos (têm 'properties')
   4. lookup_cep é executável com mock do httpx
   5. Tools de Supabase retornam dict com chave correta mesmo em erro
+  6. SEGURANÇA: search_educational_catalog rejeita queries a tabelas privadas (LGPD)
+  7. SEGURANÇA: get_student_profile e get_match_results NÃO estão no MCP global
 """
 import json
 import pytest
@@ -16,8 +18,8 @@ class TestMcpServerRegistration:
     """Verifica que o FastMCP registrou as tools corretas."""
 
     @pytest.mark.asyncio
-    async def test_all_expected_tools_registered(self):
-        """O MCP Server deve registrar exatamente as 5 tools do contrato."""
+    async def test_public_catalog_tools_registered(self):
+        """O MCP Server deve registrar exatamente as 4 tools públicas do catálogo."""
         with patch("src.mcp.server.get_supabase_service"):
             from src.mcp.server import mcp
 
@@ -25,14 +27,31 @@ class TestMcpServerRegistration:
             registered_names = {t.name for t in tools}
 
         expected = {
-            "search_opportunities",
-            "get_student_profile",
+            "search_educational_catalog",
             "lookup_cep",
-            "get_match_results",
             "search_institutions",
+            "search_opportunities",
         }
         assert expected.issubset(registered_names), (
-            f"Tools faltando: {expected - registered_names}"
+            f"Tools públicas faltando: {expected - registered_names}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_private_user_tools_NOT_in_mcp(self):
+        """SEGURANÇA LGPD: get_student_profile e get_match_results NÃO devem
+        estar expostos no MCP global — acesso a dados do usuário é controlado
+        pelo engine usando o profile_id da requisição autenticada."""
+        with patch("src.mcp.server.get_supabase_service"):
+            from src.mcp.server import mcp
+
+            tools = await mcp.list_tools()
+            registered_names = {t.name for t in tools}
+
+        forbidden = {"get_student_profile", "get_match_results"}
+        exposed = forbidden & registered_names
+        assert not exposed, (
+            f"Tools privadas LGPD estão expostas no MCP: {exposed}. "
+            "Mova-as para ferramentas nativas do engine (src/tools/user_data.py)."
         )
 
     @pytest.mark.asyncio
@@ -50,36 +69,24 @@ class TestMcpServerRegistration:
             )
 
     @pytest.mark.asyncio
-    async def test_search_opportunities_has_query_parameter(self):
-        """search_opportunities deve exigir o parâmetro 'query'."""
+    async def test_search_educational_catalog_has_sql_query_parameter(self):
+        """search_educational_catalog deve exigir o parâmetro 'sql_query'."""
         with patch("src.mcp.server.get_supabase_service"):
             from src.mcp.server import mcp
 
             tools = await mcp.list_tools()
             tool_map = {t.name: t for t in tools}
 
-        tool = tool_map["search_opportunities"]
-        schema = tool.inputSchema or {}
-        assert "query" in schema.get("properties", {}), (
-            "search_opportunities deve ter parâmetro 'query'"
+        assert "search_educational_catalog" in tool_map, (
+            "search_educational_catalog não registrada no MCP"
         )
-        assert "query" in schema.get("required", []), (
-            "O parâmetro 'query' deve ser obrigatório"
-        )
-
-    @pytest.mark.asyncio
-    async def test_get_student_profile_has_profile_id_parameter(self):
-        """get_student_profile deve exigir o parâmetro 'profile_id'."""
-        with patch("src.mcp.server.get_supabase_service"):
-            from src.mcp.server import mcp
-
-            tools = await mcp.list_tools()
-            tool_map = {t.name: t for t in tools}
-
-        tool = tool_map["get_student_profile"]
+        tool = tool_map["search_educational_catalog"]
         schema = tool.inputSchema or {}
-        assert "profile_id" in schema.get("properties", {}), (
-            "get_student_profile deve ter parâmetro 'profile_id'"
+        assert "sql_query" in schema.get("properties", {}), (
+            "search_educational_catalog deve ter parâmetro 'sql_query'"
+        )
+        assert "sql_query" in schema.get("required", []), (
+            "O parâmetro 'sql_query' deve ser obrigatório"
         )
 
 
@@ -145,7 +152,7 @@ class TestMcpServerToolExecution:
 
     @pytest.mark.asyncio
     async def test_get_match_results_returns_matches_key(self):
-        """get_match_results deve sempre retornar chave 'matches'."""
+        """get_match_results (nativo, LGPD-safe) deve sempre retornar chave 'matches'."""
         mock_supabase = MagicMock()
         mock_resp = MagicMock()
         mock_resp.data = []
@@ -158,11 +165,9 @@ class TestMcpServerToolExecution:
             .execute.return_value
         ) = mock_resp
 
-        with patch("src.mcp.server.get_supabase_service", return_value=mock_supabase):
-            from src.mcp.server import get_match_results
-            result_str = await get_match_results(profile_id="some-uuid")
+        from src.tools.user_data import get_match_results_native
+        result = await get_match_results_native(supabase=mock_supabase, profile_id="some-uuid")
 
-        result = json.loads(result_str)
         assert "matches" in result
         assert isinstance(result["matches"], list)
 
@@ -187,6 +192,127 @@ class TestMcpServerToolExecution:
 
         result = json.loads(result_str)
         assert "institutions" in result
+
+
+class TestCatalogSecurityBlocklist:
+    """SEGURANÇA LGPD: search_educational_catalog deve rejeitar acesso a tabelas privadas."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_query_with_user_profiles(self):
+        """Query com 'user_profiles' deve ser rejeitada com erro."""
+        with patch("src.mcp.server.get_supabase_service"):
+            from src.mcp.server import search_educational_catalog
+            result_str = await search_educational_catalog(
+                sql_query="SELECT * FROM user_profiles WHERE id = '123'"
+            )
+        result = json.loads(result_str)
+        assert "error" in result, "Deve retornar chave 'error' para tabela privada"
+        assert "results" not in result or result.get("results") is None, (
+            "Não deve retornar resultados para query rejeitada"
+        )
+
+    @pytest.mark.asyncio
+    async def test_rejects_query_with_users_metadata(self):
+        """Query com 'users_metadata' deve ser rejeitada."""
+        with patch("src.mcp.server.get_supabase_service"):
+            from src.mcp.server import search_educational_catalog
+            result_str = await search_educational_catalog(
+                sql_query="SELECT cognitive_memory FROM users_metadata"
+            )
+        result = json.loads(result_str)
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_rejects_query_with_user_preferences(self):
+        """Query com 'user_preferences' deve ser rejeitada."""
+        with patch("src.mcp.server.get_supabase_service"):
+            from src.mcp.server import search_educational_catalog
+            result_str = await search_educational_catalog(
+                sql_query="SELECT enem_score FROM user_preferences WHERE user_id = 'abc'"
+            )
+        result = json.loads(result_str)
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_rejects_query_referencing_auth_schema(self):
+        """Query com 'auth.' (schema auth do Supabase) deve ser rejeitada."""
+        with patch("src.mcp.server.get_supabase_service"):
+            from src.mcp.server import search_educational_catalog
+            result_str = await search_educational_catalog(
+                sql_query="SELECT email FROM auth.users"
+            )
+        result = json.loads(result_str)
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_rejects_query_with_auth_standalone(self):
+        """Query com 'auth' como nome de tabela isolado deve ser rejeitada."""
+        with patch("src.mcp.server.get_supabase_service"):
+            from src.mcp.server import search_educational_catalog
+            result_str = await search_educational_catalog(
+                sql_query="SELECT * FROM auth WHERE uid = '123'"
+            )
+        result = json.loads(result_str)
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_rejects_blocklist_case_insensitive(self):
+        """A validação deve ser case-insensitive (USER_PROFILES, Auth, etc.)."""
+        with patch("src.mcp.server.get_supabase_service"):
+            from src.mcp.server import search_educational_catalog
+            result_str = await search_educational_catalog(
+                sql_query="SELECT * FROM USER_PROFILES"
+            )
+        result = json.loads(result_str)
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_allows_valid_catalog_query(self):
+        """Query válida contra v_unified_opportunities deve ser executada."""
+        mock_supabase = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.data = [
+            {"unified_id": "mec_1", "title": "Bolsa Medicina USP", "opportunity_type": "bolsa"}
+        ]
+        (
+            mock_supabase.table.return_value
+            .select.return_value
+            .ilike.return_value
+            .limit.return_value
+            .execute.return_value
+        ) = mock_resp
+
+        with patch("src.mcp.server.get_supabase_service", return_value=mock_supabase):
+            from src.mcp.server import search_educational_catalog
+            result_str = await search_educational_catalog(
+                sql_query="SELECT * FROM v_unified_opportunities WHERE title ILIKE '%medicina%'"
+            )
+        result = json.loads(result_str)
+        assert "results" in result, "Query válida deve retornar 'results'"
+        assert "error" not in result or result.get("error") is None
+
+    @pytest.mark.asyncio
+    async def test_allows_institutions_query(self):
+        """Query válida contra partners/institutions deve ser executada."""
+        mock_supabase = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.data = [{"id": "inst_1", "name": "USP", "state": "SP"}]
+        (
+            mock_supabase.table.return_value
+            .select.return_value
+            .ilike.return_value
+            .eq.return_value
+            .limit.return_value
+            .execute.return_value
+        ) = mock_resp
+
+        with patch("src.mcp.server.get_supabase_service", return_value=mock_supabase):
+            from src.mcp.server import search_educational_catalog
+            result_str = await search_educational_catalog(
+                sql_query="SELECT * FROM institutions WHERE name ILIKE '%USP%'"
+            )
+        result = json.loads(result_str)
+        assert "results" in result
 
 
 class TestSchemaConversion:

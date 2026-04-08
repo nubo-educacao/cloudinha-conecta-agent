@@ -4,7 +4,9 @@ Atua como MCP Client: lista tools do nubo-tools MCP Server,
 converte para GenAI FunctionDeclarations, e executa o loop de tool-calling.
 
 Nenhuma lógica de SQL ou Supabase aqui — toda a lógica de dados fica no MCP Server.
+Dados do usuário (perfil, match) são injetados pelo engine, não buscados via MCP.
 """
+import json
 import logging
 from typing import AsyncGenerator
 
@@ -18,7 +20,8 @@ from src.models.chat_events import ToolStartEvent, ToolEndEvent
 
 logger = logging.getLogger(__name__)
 
-REASONING_SYSTEM_PROMPT = """Você é o Reasoning Agent da Cloudinha — assistente educacional do Nubo Conecta.
+# Fallback usado apenas quando o banco (agent_prompts) está indisponível
+_REASONING_FALLBACK_PROMPT = """Você é o Reasoning Agent da Cloudinha — assistente educacional do Nubo Conecta.
 
 Sua função é COLETAR DADOS via tools e RACIOCINAR sobre a pergunta do usuário.
 Você NÃO gera a resposta final — apenas o relatório de raciocínio para o Response Agent.
@@ -50,6 +53,7 @@ async def run_reasoning_agent(
     lean_context: str,
     few_shot_examples: str,
     mcp_url: str | None = None,
+    system_prompt: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Executa o Reasoning Agent via MCP Client.
 
@@ -66,9 +70,11 @@ async def run_reasoning_agent(
         lean_context: Contexto do usuário montado pelo context_service
         few_shot_examples: Exemplos de tom/estilo da retrieval_service
         mcp_url: URL do MCP Server (usa settings.MCP_SERVER_URL se None)
+        system_prompt: System instruction dinâmica do banco. Se None, usa fallback.
     """
     client = genai.Client(api_key=settings.GOOGLE_API_KEY)
     url = mcp_url or settings.MCP_SERVER_URL
+    instruction = system_prompt or _REASONING_FALLBACK_PROMPT
     prompt = _build_reasoning_prompt(plan, lean_context, few_shot_examples)
 
     try:
@@ -76,7 +82,7 @@ async def run_reasoning_agent(
             genai_tools = await list_genai_tools(mcp_session)
 
             config = types.GenerateContentConfig(
-                system_instruction=REASONING_SYSTEM_PROMPT,
+                system_instruction=instruction,
                 tools=genai_tools if genai_tools else None,
                 temperature=0.2,
                 max_output_tokens=2048,
@@ -113,7 +119,6 @@ async def run_reasoning_agent(
                         tool_result = await call_mcp_tool(mcp_session, fn_name, fn_args)
 
                         # Emitir tool_end com output
-                        import json
                         yield ToolEndEvent(
                             tool=fn_name,
                             output=json.dumps(tool_result, ensure_ascii=False),
