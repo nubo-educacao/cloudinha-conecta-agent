@@ -1,0 +1,90 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.14.3, pytest-9.0.2, pluggy-1.6.0 -- C:\Users\Bruno Bogochvol\Documents\GitHub\Nubo\cloudinha-conecta-agent\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\Bruno Bogochvol\Documents\GitHub\Nubo\cloudinha-conecta-agent
+configfile: pyproject.toml
+plugins: anyio-4.13.0, langsmith-0.7.23, asyncio-1.3.0, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 69 items
+
+tests/test_contracts.py::TestParseStructuredPlan::test_parse_valid_full_plan PASSED [  1%]
+tests/test_contracts.py::TestParseStructuredPlan::test_parse_minimal_plan PASSED [  2%]
+tests/test_contracts.py::TestParseStructuredPlan::test_all_valid_categories_accepted PASSED [  4%]
+tests/test_contracts.py::TestParseStructuredPlan::test_unknown_category_falls_back_to_general_qa PASSED [  5%]
+tests/test_contracts.py::TestParseStructuredPlan::test_missing_intent_raises_value_error PASSED [  7%]
+tests/test_contracts.py::TestParseStructuredPlan::test_empty_string_raises_value_error PASSED [  8%]
+tests/test_contracts.py::TestParseStructuredPlan::test_no_tools_section_returns_empty_list PASSED [ 10%]
+tests/test_contracts.py::TestParseStructuredPlan::test_fallback_plan_is_valid PASSED [ 11%]
+tests/test_contracts.py::TestParseReasoningReport::test_parse_full_report PASSED [ 13%]
+tests/test_contracts.py::TestParseReasoningReport::test_parse_empty_report_returns_defaults PASSED [ 14%]
+tests/test_contracts.py::TestParseReasoningReport::test_action_defaults_to_none_when_absent PASSED [ 15%]
+tests/test_contracts.py::TestParseReasoningReport::test_suggested_followups_parsed_correctly PASSED [ 17%]
+tests/test_contracts.py::TestExtractSuggestions::test_extract_from_valid_report PASSED [ 18%]
+tests/test_contracts.py::TestExtractSuggestions::test_extract_returns_empty_when_section_absent PASSED [ 20%]
+tests/test_contracts.py::TestExtractSuggestions::test_extract_strips_dash_prefix PASSED [ 21%]
+tests/test_mcp_server.py::TestMcpServerRegistration::test_public_catalog_tools_registered PASSED [ 23%]
+tests/test_mcp_server.py::TestMcpServerRegistration::test_private_user_tools_NOT_in_mcp PASSED [ 24%]
+tests/test_mcp_server.py::TestMcpServerRegistration::test_each_tool_has_description PASSED [ 26%]
+tests/test_mcp_server.py::TestMcpServerRegistration::test_search_educational_catalog_has_sql_query_parameter PASSED [ 27%]
+tests/test_mcp_server.py::TestMcpServerToolExecution::test_lookup_cep_returns_valid_address PASSED [ 28%]
+tests/test_mcp_server.py::TestMcpServerToolExecution::test_search_opportunities_returns_results_key PASSED [ 30%]
+tests/test_mcp_server.py::TestMcpServerToolExecution::test_search_opportunities_returns_error_key_on_failure PASSED [ 31%]
+tests/test_mcp_server.py::TestMcpServerToolExecution::test_get_match_results_returns_matches_key PASSED [ 33%]
+tests/test_mcp_server.py::TestMcpServerToolExecution::test_search_institutions_returns_institutions_key PASSED [ 34%]
+tests/test_mcp_server.py::TestCatalogSecurityBlocklist::test_rejects_query_with_user_profiles PASSED [ 36%]
+tests/test_mcp_server.py::TestCatalogSecurityBlocklist::test_rejects_query_with_users_metadata PASSED [ 37%]
+tests/test_mcp_server.py::TestCatalogSecurityBlocklist::test_rejects_query_with_user_preferences PASSED [ 39%]
+tests/test_mcp_server.py::TestCatalogSecurityBlocklist::test_rejects_query_referencing_auth_schema PASSED [ 40%]
+tests/test_mcp_server.py::TestCatalogSecurityBlocklist::test_rejects_query_with_auth_standalone PASSED [ 42%]
+tests/test_mcp_server.py::TestCatalogSecurityBlocklist::test_rejects_blocklist_case_insensitive PASSED [ 43%]
+tests/test_mcp_server.py::TestCatalogSecurityBlocklist::test_allows_valid_catalog_query PASSED [ 44%]
+tests/test_mcp_server.py::TestCatalogSecurityBlocklist::test_allows_institutions_query PASSED [ 46%]
+tests/test_mcp_server.py::TestSchemaConversion::test_converts_string_type PASSED [ 47%]
+tests/test_mcp_server.py::TestSchemaConversion::test_converts_integer_type PASSED [ 49%]
+tests/test_mcp_server.py::TestSchemaConversion::test_empty_schema_returns_object PASSED [ 50%]
+tests/test_mcp_server.py::TestSchemaConversion::test_unknown_type_defaults_to_string PASSED [ 52%]
+tests/test_planning.py::TestPlanningAgent::test_classifies_course_search_correctly PASSED [ 53%]
+tests/test_planning.py::TestPlanningAgent::test_classifies_casual_correctly PASSED [ 55%]
+tests/test_planning.py::TestPlanningAgent::test_uses_fallback_plan_when_llm_returns_invalid_output PASSED [ 56%]
+tests/test_planning.py::TestPlanningAgent::test_retries_once_on_parse_failure_then_succeeds PASSED [ 57%]
+tests/test_planning.py::TestPlanningAgent::test_all_intent_categories_are_valid PASSED [ 59%]
+tests/test_prompt_service.py::TestResolveSystemPrompt::test_returns_instruction_from_db PASSED [ 60%]
+tests/test_prompt_service.py::TestResolveSystemPrompt::test_returns_fallback_when_not_found PASSED [ 62%]
+tests/test_prompt_service.py::TestResolveSystemPrompt::test_returns_fallback_on_db_error PASSED [ 63%]
+tests/test_prompt_service.py::TestResolveSystemPrompt::test_queries_agent_prompts_table PASSED [ 65%]
+tests/test_prompt_service.py::TestResolveSystemPrompt::test_empty_instruction_uses_fallback PASSED [ 66%]
+tests/test_prompt_service.py::TestConstantsRemovedFromAgents::test_reasoning_system_prompt_not_in_module PASSED [ 68%]
+tests/test_prompt_service.py::TestConstantsRemovedFromAgents::test_response_system_prompt_not_in_module PASSED [ 69%]
+tests/test_reasoning.py::TestReasoningAgentMcpNative::test_reasoning_agent_has_no_supabase_client_import PASSED [ 71%]
+tests/test_reasoning.py::TestReasoningAgentMcpNative::test_reasoning_agent_imports_mcp_client PASSED [ 72%]
+tests/test_reasoning.py::TestReasoningAgentMcpNative::test_emits_tool_start_then_tool_end_then_complete PASSED [ 73%]
+tests/test_reasoning.py::TestReasoningAgentMcpNative::test_emits_reasoning_error_on_mcp_failure PASSED [ 75%]
+tests/test_reasoning.py::TestReasoningAgentMcpNative::test_tool_start_event_contains_tool_name PASSED [ 76%]
+tests/test_reasoning.py::TestReasoningAgentMcpNative::test_no_tools_plan_goes_direct_to_reasoning_complete PASSED [ 78%]
+tests/test_user_data_tools.py::TestGetStudentProfileNative::test_returns_profile_and_preferences PASSED [ 79%]
+tests/test_user_data_tools.py::TestGetStudentProfileNative::test_profile_id_is_injected_not_llm_controlled PASSED [ 81%]
+tests/test_user_data_tools.py::TestGetStudentProfileNative::test_returns_error_dict_on_db_failure PASSED [ 82%]
+tests/test_user_data_tools.py::TestGetStudentProfileNative::test_returns_dict_not_json_string PASSED [ 84%]
+tests/test_user_data_tools.py::TestGetMatchResultsNative::test_returns_matches_list PASSED [ 85%]
+tests/test_user_data_tools.py::TestGetMatchResultsNative::test_respects_limit_parameter PASSED [ 86%]
+tests/test_user_data_tools.py::TestGetMatchResultsNative::test_returns_error_dict_on_db_failure PASSED [ 88%]
+tests/test_user_data_tools.py::TestGetMatchResultsNative::test_returns_dict_not_json_string PASSED [ 89%]
+tests/test_workflow.py::TestSystemIntentInterceptor::test_is_system_intent_returns_true_for_system_type PASSED [ 91%]
+tests/test_workflow.py::TestSystemIntentInterceptor::test_is_system_intent_returns_false_for_user_message PASSED [ 92%]
+tests/test_workflow.py::TestSystemIntentInterceptor::test_system_intent_ping_returns_pong PASSED [ 94%]
+tests/test_workflow.py::TestSystemIntentInterceptor::test_system_intent_does_not_call_supabase_insert PASSED [ 95%]
+tests/test_workflow.py::TestPipelineIntegration::test_pipeline_emits_text_events PASSED [ 97%]
+tests/test_workflow.py::TestPipelineIntegration::test_suggestions_emitted_after_text PASSED [ 98%]
+tests/test_workflow.py::TestPipelineIntegration::test_ndjson_events_are_valid_json PASSED [100%]
+
+============================== warnings summary ===============================
+.venv\Lib\site-packages\google\genai\types.py:43
+  C:\Users\Bruno Bogochvol\Documents\GitHub\Nubo\cloudinha-conecta-agent\.venv\Lib\site-packages\google\genai\types.py:43: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
+    VersionedUnionType = Union[builtin_types.UnionType, _UnionGenericAlias]
+
+src\config.py:4
+  C:\Users\Bruno Bogochvol\Documents\GitHub\Nubo\cloudinha-conecta-agent\src\config.py:4: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class Settings(BaseSettings):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 69 passed, 2 warnings in 1.73s ========================
