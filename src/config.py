@@ -1,7 +1,9 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
     # Supabase
     SUPABASE_URL: str
     SUPABASE_ANON_KEY: str
@@ -9,6 +11,7 @@ class Settings(BaseSettings):
 
     # Gemini
     GOOGLE_API_KEY: str
+    TIMEZONE: str = "America/Sao_Paulo"
     PLANNING_MODEL: str = "gemini-2.0-flash-lite"
     REASONING_MODEL: str = "gemini-2.0-flash"
     RESPONSE_MODEL: str = "gemini-2.0-flash"
@@ -20,8 +23,6 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "*"
     LOG_LEVEL: str = "INFO"
 
-    class Config:
-        env_file = ".env"
 
 
 settings = Settings()

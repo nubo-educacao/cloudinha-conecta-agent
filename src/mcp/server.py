@@ -208,6 +208,6 @@ if __name__ == "__main__":
             transport = sys.argv[idx + 1]
 
     if transport == "http":
-        mcp.run(transport="streamable-http", host="0.0.0.0", port=8001, path="/mcp")
+        mcp.run(transport="sse")
     else:
         mcp.run(transport="stdio")
