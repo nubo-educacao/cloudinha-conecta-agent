@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     RESPONSE_MODEL: str = "gemini-2.0-flash"
 
     # MCP Server (nubo-tools)
-    MCP_SERVER_URL: str = "http://localhost:8001/mcp"
+    MCP_SERVER_URL: str = "http://localhost:8001/sse"
 
     # App
     CORS_ORIGINS: str = "*"

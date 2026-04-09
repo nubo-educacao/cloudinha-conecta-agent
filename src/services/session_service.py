@@ -35,7 +35,7 @@ class SupabaseSessionService:
             self._supabase.table("chat_messages").insert({
                 "user_id": self._user_id,
                 "session_id": self._session_id,
-                "role": "user",
+                "sender": "user",
                 "content": content,
             }).execute()
         except Exception as e:
@@ -47,7 +47,7 @@ class SupabaseSessionService:
             self._supabase.table("chat_messages").insert({
                 "user_id": self._user_id,
                 "session_id": self._session_id,
-                "role": "assistant",
+                "sender": "model",
                 "content": content,
             }).execute()
         except Exception as e:
@@ -58,7 +58,7 @@ class SupabaseSessionService:
         try:
             response = (
                 self._supabase.table("chat_messages")
-                .select("role, content")
+                .select("sender, content")
                 .eq("session_id", self._session_id)
                 .order("created_at", desc=False)
                 .limit(limit)

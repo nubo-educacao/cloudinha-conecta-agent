@@ -33,7 +33,7 @@ def build_lean_context(
     # 3. Sessão curta (últimas 5 mensagens)
     if recent_messages:
         history = "\n".join(
-            f"{'Usuário' if m['role'] == 'user' else 'Cloudinha'}: {m['content']}"
+            f"{'Usuário' if m['sender'] == 'user' else 'Cloudinha'}: {m['content']}"
             for m in recent_messages[-5:]
         )
         parts.append(f"\nHISTÓRICO RECENTE DA SESSÃO:\n{history}")
