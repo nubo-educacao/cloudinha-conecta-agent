@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.sse import sse_client
 from google.genai import types
 
 logger = logging.getLogger(__name__)
@@ -22,12 +22,12 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def get_mcp_session(mcp_url: str) -> AsyncGenerator[ClientSession, None]:
-    """Context manager que abre uma sessão MCP via HTTP.
+    """Context manager que abre uma sessão MCP via SSE.
 
     Args:
-        mcp_url: URL do MCP Server (ex: 'http://localhost:8001/mcp')
+        mcp_url: URL do MCP Server (ex: 'http://localhost:8001/sse')
     """
-    async with streamablehttp_client(mcp_url) as (read, write, _):
+    async with sse_client(mcp_url) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             yield session

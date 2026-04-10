@@ -52,7 +52,7 @@ async def run_pipeline(
     """
     supabase_service = get_supabase_service()
     session_svc = SupabaseSessionService(
-        supabase=supabase_anon,
+        supabase=supabase_service,
         user_id=str(request.userId),
         session_id=request.sessionId,
     )
@@ -256,19 +256,18 @@ async def _load_profile(supabase: Client, profile_id: str) -> dict:
             supabase.table("user_profiles")
             .select("full_name, birth_date")
             .eq("id", profile_id)
-            .single()
             .execute()
         )
         meta = (
             supabase.table("users_metadata")
             .select("cognitive_memory")
             .eq("profile_id", profile_id)
-            .maybeSingle()
+            .limit(1)
             .execute()
         )
-        data = profile.data or {}
+        data = profile.data[0] if profile.data else {}
         if meta.data:
-            data["cognitive_memory"] = meta.data.get("cognitive_memory")
+            data["cognitive_memory"] = meta.data[0].get("cognitive_memory")
 
         # Calcular idade a partir de birth_date
         if data.get("birth_date"):
