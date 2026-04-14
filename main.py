@@ -9,6 +9,7 @@ from supabase import Client
 
 from src.config import settings
 from src.dependencies import supabase_anon
+from src.mcp.server import mcp
 from src.models.chat_request import ChatRequest
 from src.models.chat_events import TextEvent
 from src.workflow.engine import run_pipeline
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Cloudinha Conecta Agent iniciando...")
+    logger.info(f"Cloudinha Conecta Agent iniciando... MCP SSE em {settings.MCP_SERVER_URL}")
     yield
     logger.info("Cloudinha Conecta Agent encerrando.")
 
@@ -34,6 +35,10 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
+
+# MCP SSE Server embutido — elimina necessidade de processo separado
+# Disponível em /mcp/sse (SSE stream) e /mcp/messages/ (POST)
+app.mount("/mcp", mcp.sse_app())
 
 cors_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",")]
 app.add_middleware(

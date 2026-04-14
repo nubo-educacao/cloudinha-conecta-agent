@@ -157,9 +157,17 @@ async def run_reasoning_agent(
                     break
 
     except Exception as e:
-        logger.error(f"Reasoning Agent erro MCP: {e}")
-        # Sinaliza erro para o engine tratar com fallback
-        yield {"type": "reasoning_error", "error": str(e)}
+        # Unwrap ExceptionGroup (anyio/asyncio TaskGroup) para expor a sub-exceção real
+        real_error = e
+        if isinstance(e, ExceptionGroup):
+            logger.error(
+                f"Reasoning Agent ExceptionGroup ({len(e.exceptions)} sub-exceção(ões)):"
+            )
+            for i, sub_exc in enumerate(e.exceptions, 1):
+                logger.error(f"  [{i}] {type(sub_exc).__name__}: {sub_exc}")
+            real_error = e.exceptions[0]
+        logger.error(f"Reasoning Agent erro MCP: {type(real_error).__name__}: {real_error}")
+        yield {"type": "reasoning_error", "error": f"{type(real_error).__name__}: {real_error}"}
         return
 
     latency_ms = int((time.time() - t0) * 1000)
