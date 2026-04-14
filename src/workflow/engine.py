@@ -86,86 +86,109 @@ async def run_pipeline(
 
     _empty_result = AgentResult(text="", latency_ms=0)
 
-    for attempt in range(MAX_PIPELINE_RETRIES):
-        planning_result = _empty_result
-        reasoning_result = _empty_result
-        response_result = _empty_result
-        intent_category = "general_qa"
-        reasoning_report_text = ""
-        action = "none"
+    # Declarados fora do loop de retry para que o finally sempre log com os melhores dados disponíveis
+    planning_result = _empty_result
+    reasoning_result = _empty_result
+    response_result = _empty_result
+    intent_category = "general_qa"
+    reasoning_report_text = ""
+    action = "none"
 
-        try:
-            async for event in _execute_pipeline(
-                request=request,
-                lean_context=lean_context,
-                supabase_anon=supabase_anon,
-                supabase_service=supabase_service,
-                mcp_url=settings.MCP_SERVER_URL,
-                planning_prompt=planning_prompt or None,
-                reasoning_prompt=reasoning_prompt or None,
-                response_prompt=response_prompt or None,
-            ):
-                has_sent_events = True
-                if event.get("type") == "text":
-                    full_response_text += event.get("content", "")
-                elif event.get("type") == "_telemetry":
-                    # Internal event — capture results, don't forward
-                    planning_result = event.get("planning_result", _empty_result)
-                    reasoning_result = event.get("reasoning_result", _empty_result)
-                    response_result = event.get("response_result", _empty_result)
-                    intent_category = event.get("intent_category", "general_qa")
-                    reasoning_report_text = event.get("reasoning_report", "")
-                    action = event.get("action", "none")
+    try:
+        for attempt in range(MAX_PIPELINE_RETRIES):
+            # Variáveis por tentativa (reset a cada retry)
+            _pr = _empty_result
+            _rr = _empty_result
+            _resp = _empty_result
+            _ic = "general_qa"
+            _rrt = ""
+            _act = "none"
+
+            try:
+                async for event in _execute_pipeline(
+                    request=request,
+                    lean_context=lean_context,
+                    supabase_anon=supabase_anon,
+                    supabase_service=supabase_service,
+                    mcp_url=settings.MCP_SERVER_URL,
+                    planning_prompt=planning_prompt or None,
+                    reasoning_prompt=reasoning_prompt or None,
+                    response_prompt=response_prompt or None,
+                ):
+                    has_sent_events = True
+                    if event.get("type") == "_planning_done":
+                        # Captura planning_result logo após Planning (antes do MCP/Reasoning)
+                        _pr = event.get("planning_result", _empty_result)
+                        continue
+                    elif event.get("type") == "_telemetry":
+                        # Internal event — captura reasoning/response, não encaminha ao cliente
+                        _rr = event.get("reasoning_result", _empty_result)
+                        _resp = event.get("response_result", _empty_result)
+                        _ic = event.get("intent_category", "general_qa")
+                        _rrt = event.get("reasoning_report", "")
+                        _act = event.get("action", "none")
+                        continue
+                    elif event.get("type") == "text":
+                        full_response_text += event.get("content", "")
+                    yield event
+
+                # Pipeline completo — salvar dados finais e persistir resposta
+                planning_result = _pr
+                reasoning_result = _rr
+                response_result = _resp
+                intent_category = _ic
+                reasoning_report_text = _rrt
+                action = _act
+
+                if full_response_text:
+                    session_svc.persist_agent_message(full_response_text)
+
+                return  # Sucesso — finally roda a seguir
+
+            except TimeoutError:
+                planning_result = _pr  # preservar dados parciais para telemetria
+                logger.warning(f"Pipeline timeout (tentativa {attempt + 1}/{MAX_PIPELINE_RETRIES})")
+                if attempt < MAX_PIPELINE_RETRIES - 1:
+                    await asyncio.sleep(2 ** attempt)
                     continue
-                yield event
+                yield ErrorEvent(message=MSG_TIMEOUT).model_dump()
+                _log_tool_error(
+                    supabase_service, str(request.userId), request.sessionId,
+                    "pipeline", MSG_TIMEOUT, error_type="server_stream_error",
+                )
+                return  # finally roda a seguir
 
-            # Pipeline completo — persistir resposta do agente
-            if full_response_text:
-                session_svc.persist_agent_message(full_response_text)
+            except Exception as e:
+                planning_result = _pr  # preservar dados parciais para telemetria
+                logger.error(f"Pipeline error (tentativa {attempt + 1}): {e}")
+                if attempt < MAX_PIPELINE_RETRIES - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                _log_tool_error(
+                    supabase_service, str(request.userId), request.sessionId,
+                    "pipeline", str(e), stack_trace=traceback.format_exc(),
+                    error_type="server_stream_error",
+                )
+                yield ErrorEvent(message=MSG_RESPONSE_FAIL).model_dump()
+                return  # finally roda a seguir
 
-            # Registrar telemetria completa
-            _log_agent_turn(
-                supabase=supabase_service,
-                request=request,
-                total_latency_ms=int((time.time() - start_ts) * 1000),
-                planning_result=planning_result,
-                reasoning_result=reasoning_result,
-                response_result=response_result,
-                intent_category=intent_category,
-                reasoning_report=reasoning_report_text,
-                action=action,
-            )
+        # Fallback final: nenhum evento emitido após todos os retries
+        if not has_sent_events and not full_response_text:
+            yield TextEvent(content=MSG_FINAL_FALLBACK).model_dump()
 
-            return  # Sucesso — não retentamos
-
-        except TimeoutError:
-            logger.warning(f"Pipeline timeout (tentativa {attempt + 1}/{MAX_PIPELINE_RETRIES})")
-            if attempt < MAX_PIPELINE_RETRIES - 1:
-                await asyncio.sleep(2 ** attempt)
-                continue
-            yield ErrorEvent(message=MSG_TIMEOUT).model_dump()
-            _log_tool_error(
-                supabase_service, str(request.userId), request.sessionId,
-                "pipeline", MSG_TIMEOUT, error_type="server_stream_error",
-            )
-            return
-
-        except Exception as e:
-            logger.error(f"Pipeline error (tentativa {attempt + 1}): {e}")
-            if attempt < MAX_PIPELINE_RETRIES - 1:
-                await asyncio.sleep(2 ** attempt)
-                continue
-            _log_tool_error(
-                supabase_service, str(request.userId), request.sessionId,
-                "pipeline", str(e), stack_trace=traceback.format_exc(),
-                error_type="server_stream_error",
-            )
-            yield ErrorEvent(message=MSG_RESPONSE_FAIL).model_dump()
-            return
-
-    # Fallback final: nenhum evento emitido
-    if not has_sent_events and not full_response_text:
-        yield TextEvent(content=MSG_FINAL_FALLBACK).model_dump()
+    finally:
+        # Executado UMA vez — garante telemetria mesmo em falha parcial (BUG-S5-003)
+        _log_agent_turn(
+            supabase=supabase_service,
+            request=request,
+            total_latency_ms=int((time.time() - start_ts) * 1000),
+            planning_result=planning_result,
+            reasoning_result=reasoning_result,
+            response_result=response_result,
+            intent_category=intent_category,
+            reasoning_report=reasoning_report_text,
+            action=action,
+        )
 
 
 async def _execute_pipeline(
@@ -200,6 +223,9 @@ async def _execute_pipeline(
             error_type="planning_agent_error",
         )
         plan = FALLBACK_PLAN
+
+    # Emite planning_result ANTES do MCP/Reasoning — garante captura mesmo se Reasoning falhar
+    yield {"type": "_planning_done", "planning_result": planning_result}
 
     # ── Fase 2: Few-Shot Retrieval ─────────────────────────────────────────────
     few_shot = await retrieve_few_shot_examples(

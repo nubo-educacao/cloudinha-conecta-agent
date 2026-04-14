@@ -8,6 +8,7 @@ Uso típico:
         tools = await list_genai_tools(session)
         result = await call_mcp_tool(session, "search_opportunities", {"query": "medicina"})
 """
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -19,18 +20,33 @@ from google.genai import types
 
 logger = logging.getLogger(__name__)
 
+_MCP_CONNECT_TIMEOUT = 10.0  # segundos
+
 
 @asynccontextmanager
 async def get_mcp_session(mcp_url: str) -> AsyncGenerator[ClientSession, None]:
-    """Context manager que abre uma sessão MCP via SSE.
+    """Context manager que abre uma sessão MCP via SSE com timeout de conexão.
 
     Args:
         mcp_url: URL do MCP Server (ex: 'http://localhost:8001/sse')
+
+    Raises:
+        asyncio.TimeoutError: Se a conexão não for estabelecida em _MCP_CONNECT_TIMEOUT segundos
     """
-    async with sse_client(mcp_url) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            yield session
+    logger.debug(f"Conectando ao MCP Server: {mcp_url}")
+    try:
+        async with asyncio.timeout(_MCP_CONNECT_TIMEOUT):
+            async with sse_client(mcp_url) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    logger.debug("Sessão MCP inicializada com sucesso")
+                    yield session
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout ao conectar ao MCP Server ({_MCP_CONNECT_TIMEOUT}s): {mcp_url}")
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao conectar ao MCP Server: {e}")
+        raise
 
 
 async def list_genai_tools(session: ClientSession) -> list[types.Tool]:
