@@ -21,9 +21,13 @@ async def test_response_yields_text_and_returns_result():
     mock_chunk_middle.text = "chunk meio"
     mock_chunk_middle.usage_metadata = None
 
-    async def fake_stream(*args, **kwargs):
+    async def _fake_gen():
         yield mock_chunk_middle
         yield mock_chunk_final
+
+    # google-genai ≥1.70.0: generate_content_stream é coroutine → retorna async iterable
+    async def fake_stream(*args, **kwargs):
+        return _fake_gen()
 
     with patch("src.agents.response.genai.Client") as MockClient:
         mock_client = MagicMock()

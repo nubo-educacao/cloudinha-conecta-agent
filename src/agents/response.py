@@ -58,7 +58,8 @@ async def run_response_agent(
     output_tokens = 0
     full_text = ""
 
-    async for chunk in client.aio.models.generate_content_stream(
+    # google-genai ≥1.70.0: generate_content_stream é coroutine → await retorna o async iterable
+    stream = await client.aio.models.generate_content_stream(
         model=settings.RESPONSE_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
@@ -66,7 +67,8 @@ async def run_response_agent(
             temperature=0.7,
             max_output_tokens=1024,
         ),
-    ):
+    )
+    async for chunk in stream:
         if chunk.text:
             full_text += chunk.text
             yield chunk.text, None
