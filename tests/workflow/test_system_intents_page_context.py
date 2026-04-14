@@ -20,14 +20,20 @@ def make_page_context_request(route: str, page_data: dict = {}):
 
 
 @pytest.mark.asyncio
-async def test_page_context_opportunity_returns_message():
-    """page_context em rota de oportunidade deve retornar mensagem e open_drawer=True."""
+async def test_page_context_opportunity_returns_pipeline_intent():
+    """page_context em rota com match ativo deve retornar PipelineIntent com open_drawer=True."""
+    from src.workflow.system_intents import PipelineIntent
+
     mock_supabase = MagicMock()
-    mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+
+    # Query: .table("system_intents").select().eq("command", "page_context").eq("is_active", True).execute()
+    # Cadeia real: .table().select().eq().eq().execute()
+    mock_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(
         data=[{
-            "title": "Bolsa Integral Medicina",
-            "institution_name": "Insper",
-            "modality": "Integral",
+            "trigger_route": r"/partner-opportunities/.*",
+            "trigger_message": "O usuário está visualizando uma oportunidade de bolsa.",
+            "open_drawer": True,
+            "delay_ms": 3000,
         }]
     )
 
@@ -37,10 +43,11 @@ async def test_page_context_opportunity_returns_message():
     )
     result = await handle_system_intent(request, mock_supabase)
 
-    assert result["type"] == "system_message"
-    assert result["open_drawer"] is True
-    assert "content" in result
-    assert len(result["content"]) > 10  # mensagem não vazia
+    assert isinstance(result, PipelineIntent), (
+        f"Esperava PipelineIntent mas recebeu {type(result).__name__}: {result}"
+    )
+    assert result.open_drawer is True
+    assert len(result.trigger_message) > 10  # mensagem não vazia
 
 
 @pytest.mark.asyncio

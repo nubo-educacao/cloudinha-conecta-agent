@@ -1,16 +1,6 @@
 import os
-from pydantic import Field
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-def _default_mcp_url() -> str:
-    """Constrói a URL do MCP embutido usando a porta do próprio servidor.
-
-    Cloud Run define PORT=8080. Dev local usa PORT=8000 (ou 8080 se não definido).
-    O MCP SSE é montado em /mcp/sse dentro do mesmo processo FastAPI.
-    """
-    port = os.getenv("PORT", "8000")
-    return f"http://localhost:{port}/mcp/sse"
 
 
 class Settings(BaseSettings):
@@ -28,8 +18,26 @@ class Settings(BaseSettings):
     REASONING_MODEL: str = "gemini-2.0-flash"
     RESPONSE_MODEL: str = "gemini-2.0-flash"
 
-    # MCP Server embutido — URL calculada via PORT env var (override via MCP_SERVER_URL no .env)
-    MCP_SERVER_URL: str = Field(default_factory=_default_mcp_url)
+    # MCP SSE embutido no FastAPI — URL padrão usa porta do servidor.
+    # Se .env tiver a URL legada (localhost:8001) ela é substituída automaticamente.
+    # Para apontar a um MCP externo, defina MCP_SERVER_URL com outro host/porta.
+    MCP_SERVER_URL: str = ""
+
+    @field_validator("MCP_SERVER_URL", mode="before")
+    @classmethod
+    def resolve_mcp_url(cls, v: str) -> str:
+        """Redireciona URL legada (processo separado :8001) para o MCP embutido.
+
+        pydantic_settings lê o .env com prioridade sobre default_factory, então
+        usamos um validator para interceptar e substituir a URL obsoleta.
+        O MCP SSE está montado em /mcp/sse no mesmo processo FastAPI (PORT env var).
+        """
+        v = str(v or "")
+        # URL legada do processo separado ou ausente → usar MCP embutido
+        if not v or "localhost:8001" in v:
+            port = os.getenv("PORT", "8000")
+            return f"http://localhost:{port}/mcp/sse"
+        return v
 
     # App
     CORS_ORIGINS: str = "*"
