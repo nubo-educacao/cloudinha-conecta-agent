@@ -21,6 +21,7 @@ import json
 import logging
 import re
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.server import TransportSecuritySettings
 
 from src.services.supabase_client import get_supabase_service
 from src.tools.cep_lookup import lookup_cep as _cep_lookup
@@ -34,6 +35,10 @@ mcp = FastMCP(
         "Use para buscar oportunidades educacionais (bolsas, cursos, programas) "
         "e instituições de ensino. Dados pessoais do aluno NÃO estão disponíveis "
         "aqui — eles são injetados automaticamente pelo backend."
+    ),
+    # Desabilita o bloqueio de Host header para compatibilidade com Cloud Run / Proxy
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
     ),
 )
 

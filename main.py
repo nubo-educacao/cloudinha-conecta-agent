@@ -13,7 +13,7 @@ from src.mcp.server import mcp
 from src.models.chat_request import ChatRequest
 from src.models.chat_events import TextEvent
 from src.workflow.engine import run_pipeline
-from src.workflow.system_intents import is_system_intent, handle_system_intent
+from src.workflow.system_intents import is_system_intent, handle_system_intent, PipelineIntent
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
@@ -63,8 +63,9 @@ async def chat(
     """Endpoint de chat com streaming NDJSON.
 
     Para system intents (intent_type='system_intent'):
-      - NÃO persiste em chat_messages
-      - Responde com evento único (JSON) sem passar pelo pipeline LLM
+      - Intents leves (ping, starters, clear_session): resposta direta sem LLM
+      - Intents contextuais (page_context): resolvem a trigger_message via DB
+        e rodam o pipeline LLM completo. A Cloudinha gera resposta real.
 
     Para mensagens normais:
       - Pipeline Planning → Reasoning → Response
@@ -72,6 +73,47 @@ async def chat(
     """
     if is_system_intent(request):
         result = await handle_system_intent(request, supabase)
+
+        # PipelineIntent → rodar pipeline LLM com a trigger_message oculta
+        if isinstance(result, PipelineIntent):
+            # Substituir o chatInput pela trigger_message (mensagem invisível para a Cloudinha)
+            request.chatInput = result.trigger_message
+            request.intent_type = "system_intent_pipeline"  # Marcar para telemetria
+
+            # Metadados para o frontend (open_drawer, delay_ms)
+            intent_metadata = {
+                "open_drawer": result.open_drawer,
+                "delay_ms": result.delay_ms,
+            }
+
+            async def generate_intent():
+                has_sent_events = False
+                full_text = ""
+                try:
+                    async for event in run_pipeline(request, supabase):
+                        has_sent_events = True
+                        if event.get("type") == "text":
+                            full_text += event.get("content", "")
+                        yield json.dumps(event, ensure_ascii=False) + "\n"
+                except Exception as e:
+                    logger.error(f"Erro no pipeline de system intent: {e}")
+                    error_event = {"type": "error", "message": "Desculpe, não consegui processar."}
+                    yield json.dumps(error_event, ensure_ascii=False) + "\n"
+
+                if not has_sent_events and not full_text:
+                    fallback = TextEvent(content="Desculpe, não consegui processar.")
+                    yield fallback.model_dump_json() + "\n"
+
+                # Emitir metadados para o frontend (NÃO vai pro agente — é pós-pipeline)
+                yield json.dumps({"type": "intent_metadata", **intent_metadata}, ensure_ascii=False) + "\n"
+
+            return StreamingResponse(
+                generate_intent(),
+                media_type="application/x-ndjson",
+                headers={"X-Content-Type-Options": "nosniff"},
+            )
+
+        # Intent leve — resposta direta
         return result
 
     async def generate():
@@ -98,3 +140,4 @@ async def chat(
         media_type="application/x-ndjson",
         headers={"X-Content-Type-Options": "nosniff"},
     )
+
