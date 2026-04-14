@@ -16,6 +16,7 @@ from supabase import Client
 from src.agents.planning import run_planning_agent
 from src.agents.reasoning import run_reasoning_agent
 from src.agents.response import run_response_agent
+from src.contracts.agent_result import AgentResult
 from src.contracts.reasoning_report import parse_reasoning_report, extract_suggestions
 from src.contracts.structured_plan import FALLBACK_PLAN, StructuredPlan
 from src.models.chat_events import ErrorEvent, SuggestionsEvent, TextEvent
@@ -83,7 +84,16 @@ async def run_pipeline(
     full_response_text = ""
     start_ts = time.time()
 
+    _empty_result = AgentResult(text="", latency_ms=0)
+
     for attempt in range(MAX_PIPELINE_RETRIES):
+        planning_result = _empty_result
+        reasoning_result = _empty_result
+        response_result = _empty_result
+        intent_category = "general_qa"
+        reasoning_report_text = ""
+        action = "none"
+
         try:
             async for event in _execute_pipeline(
                 request=request,
@@ -98,18 +108,34 @@ async def run_pipeline(
                 has_sent_events = True
                 if event.get("type") == "text":
                     full_response_text += event.get("content", "")
+                elif event.get("type") == "_telemetry":
+                    # Internal event — capture results, don't forward
+                    planning_result = event.get("planning_result", _empty_result)
+                    reasoning_result = event.get("reasoning_result", _empty_result)
+                    response_result = event.get("response_result", _empty_result)
+                    intent_category = event.get("intent_category", "general_qa")
+                    reasoning_report_text = event.get("reasoning_report", "")
+                    action = event.get("action", "none")
+                    continue
                 yield event
 
             # Pipeline completo — persistir resposta do agente
             if full_response_text:
                 session_svc.persist_agent_message(full_response_text)
 
-            # Registrar telemetria
+            # Registrar telemetria completa
             _log_agent_turn(
                 supabase=supabase_service,
                 request=request,
                 total_latency_ms=int((time.time() - start_ts) * 1000),
+                planning_result=planning_result,
+                reasoning_result=reasoning_result,
+                response_result=response_result,
+                intent_category=intent_category,
+                reasoning_report=reasoning_report_text,
+                action=action,
             )
+
             return  # Sucesso — não retentamos
 
         except TimeoutError:
@@ -154,9 +180,14 @@ async def _execute_pipeline(
 ) -> AsyncGenerator[dict, None]:
     """Execução single-attempt do pipeline. Levanta exceções para o retry wrapper tratar."""
 
+    _empty_result = AgentResult(text="", latency_ms=0)
+    planning_result = _empty_result
+    reasoning_result = _empty_result
+    response_result = _empty_result
+
     # ── Fase 1: Planning ──────────────────────────────────────────────────────
     try:
-        plan = await run_planning_agent(
+        plan, planning_result = await run_planning_agent(
             user_message=request.chatInput,
             lean_context=lean_context,
             system_prompt=planning_prompt,
@@ -189,6 +220,7 @@ async def _execute_pipeline(
         ):
             if event.get("type") == "reasoning_complete":
                 reasoning_text = event.get("report", "")
+                reasoning_result = event.get("result", _empty_result)
             elif event.get("type") == "reasoning_error":
                 # MCP connection error — propaga como ErrorEvent
                 raise RuntimeError(f"MCP error: {event.get('error')}")
@@ -227,13 +259,16 @@ async def _execute_pipeline(
 
     # ── Fase 4: Response streaming ─────────────────────────────────────────────
     try:
-        async for text_chunk in run_response_agent(
+        async for text_chunk, agent_result in run_response_agent(
             reasoning_report=report,
             lean_context=lean_context,
             user_message=request.chatInput,
             system_prompt=response_prompt,
         ):
-            yield TextEvent(content=text_chunk).model_dump()
+            if agent_result is not None:
+                response_result = agent_result
+            elif text_chunk:
+                yield TextEvent(content=text_chunk).model_dump()
     except Exception as e:
         logger.error(f"Response agent error: {e}")
         _log_tool_error(
@@ -247,6 +282,18 @@ async def _execute_pipeline(
     # ── Fase 5: Suggestions (após response completo) ───────────────────────────
     if suggestions:
         yield SuggestionsEvent(items=suggestions[:3]).model_dump()
+
+    # ── Fase 6: Telemetria interna (capturada pelo run_pipeline) ──────────────
+    action_str = report.action if report else "none"
+    yield {
+        "type": "_telemetry",
+        "planning_result": planning_result,
+        "reasoning_result": reasoning_result,
+        "response_result": response_result,
+        "intent_category": plan.intent_category,
+        "reasoning_report": reasoning_text,
+        "action": action_str,
+    }
 
 
 async def _load_profile(supabase: Client, profile_id: str) -> dict:
@@ -311,18 +358,55 @@ def _log_tool_error(
         logging.error(f"Falha ao persistir erro no agent_errors: {e}")
 
 
+# Preços Gemini 2.0 Flash (https://ai.google.dev/pricing)
+_COST_PER_M_INPUT  = 0.075  / 1_000_000   # USD por token input
+_COST_PER_M_OUTPUT = 0.300  / 1_000_000   # USD por token output
+
+
+def _estimate_cost(*results: AgentResult) -> float:
+    """Calcula custo estimado em USD com base nos tokens consumidos."""
+    total = sum(
+        r.input_tokens * _COST_PER_M_INPUT + r.output_tokens * _COST_PER_M_OUTPUT
+        for r in results
+    )
+    return round(total, 6)
+
+
 def _log_agent_turn(
     supabase: Client,
     request: ChatRequest,
     total_latency_ms: int,
+    planning_result: AgentResult | None = None,
+    reasoning_result: AgentResult | None = None,
+    response_result: AgentResult | None = None,
+    intent_category: str = "general_qa",
+    reasoning_report: str = "",
+    action: str = "none",
 ) -> None:
-    """Registra telemetria do turno na tabela agent_turns."""
+    """Registra telemetria completa do turno na tabela agent_turns."""
+    _empty = AgentResult(text="", latency_ms=0)
+    pr = planning_result or _empty
+    rr = reasoning_result or _empty
+    resp = response_result or _empty
+
     try:
         supabase.table("agent_turns").insert({
-            "user_id": str(request.userId),
-            "session_id": request.sessionId,
-            "total_latency_ms": total_latency_ms,
-            "action": "none",
+            "user_id":              str(request.userId),
+            "session_id":           request.sessionId,
+            "total_latency_ms":     total_latency_ms,
+            "planning_latency_ms":  pr.latency_ms,
+            "reasoning_latency_ms": rr.latency_ms,
+            "response_latency_ms":  resp.latency_ms,
+            "input_tokens":         pr.input_tokens + rr.input_tokens + resp.input_tokens,
+            "output_tokens":        pr.output_tokens + rr.output_tokens + resp.output_tokens,
+            "tools_used":           rr.tools_used or [],
+            "intent_category":      intent_category,
+            "reasoning_report":     reasoning_report,
+            "action":               action,
+            "planning_output":      pr.text,
+            "reasoning_output":     rr.text,
+            "response_output":      resp.text,
+            "estimated_cost_usd":   _estimate_cost(pr, rr, resp),
         }).execute()
     except Exception as e:
         logger.warning(f"Falha ao registrar agent_turn: {e}")

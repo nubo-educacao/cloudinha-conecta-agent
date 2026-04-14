@@ -8,12 +8,14 @@ Dados do usuário (perfil, match) são injetados pelo engine, não buscados via 
 """
 import json
 import logging
+import time
 from typing import AsyncGenerator
 
 from google import genai
 from google.genai import types
 
 from src.config import settings
+from src.contracts.agent_result import AgentResult
 from src.contracts.structured_plan import StructuredPlan
 from src.mcp.client import get_mcp_session, list_genai_tools, call_mcp_tool
 from src.models.chat_events import ToolStartEvent, ToolEndEvent
@@ -63,7 +65,7 @@ async def run_reasoning_agent(
     Emite:
       - ToolStartEvent antes de cada chamada de tool
       - ToolEndEvent após cada chamada de tool
-      - {"type": "reasoning_complete", "report": <markdown>} ao final
+      - {"type": "reasoning_complete", "report": <markdown>, "result": AgentResult} ao final
 
     Args:
         plan: Plano estruturado do Planning Agent
@@ -76,6 +78,11 @@ async def run_reasoning_agent(
     url = mcp_url or settings.MCP_SERVER_URL
     instruction = system_prompt or _REASONING_FALLBACK_PROMPT
     prompt = _build_reasoning_prompt(plan, lean_context, few_shot_examples)
+
+    t0 = time.time()
+    total_input_tokens = 0
+    total_output_tokens = 0
+    all_tools_used: list[dict] = []
 
     try:
         async with get_mcp_session(url) as mcp_session:
@@ -99,6 +106,11 @@ async def run_reasoning_agent(
                     config=config,
                 )
 
+                # Acumular tokens de cada turn
+                if response.usage_metadata:
+                    total_input_tokens += response.usage_metadata.prompt_token_count or 0
+                    total_output_tokens += response.usage_metadata.candidates_token_count or 0
+
                 if not response.candidates:
                     break
 
@@ -111,6 +123,8 @@ async def run_reasoning_agent(
                         has_function_call = True
                         fn_name = part.function_call.name
                         fn_args = dict(part.function_call.args) if part.function_call.args else {}
+
+                        all_tools_used.append({"name": fn_name, "args": fn_args})
 
                         # Emitir tool_start ANTES de chamar (UX badge "pesquisando...")
                         yield ToolStartEvent(tool=fn_name, args=fn_args).model_dump()
@@ -148,7 +162,19 @@ async def run_reasoning_agent(
         yield {"type": "reasoning_error", "error": str(e)}
         return
 
-    yield {"type": "reasoning_complete", "report": captured_text}
+    latency_ms = int((time.time() - t0) * 1000)
+    reasoning_result = AgentResult(
+        text=captured_text,
+        latency_ms=latency_ms,
+        input_tokens=total_input_tokens,
+        output_tokens=total_output_tokens,
+        tools_used=all_tools_used,
+    )
+    logger.info(
+        f"[Reasoning] tools={len(all_tools_used)} latency={latency_ms}ms "
+        f"tokens_in={total_input_tokens} tokens_out={total_output_tokens}"
+    )
+    yield {"type": "reasoning_complete", "report": captured_text, "result": reasoning_result}
 
 
 def _build_reasoning_prompt(

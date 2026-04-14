@@ -50,7 +50,7 @@ class TestPlanningAgent:
             mock_client_cls.return_value = mock_client
             mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-            plan = await run_planning_agent(
+            plan, _ = await run_planning_agent(
                 user_message="Quais bolsas tenho para medicina?",
                 lean_context="USER_ID: test\nNOME: Ana",
             )
@@ -70,7 +70,7 @@ class TestPlanningAgent:
             mock_client_cls.return_value = mock_client
             mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-            plan = await run_planning_agent(
+            plan, _ = await run_planning_agent(
                 user_message="Oi tudo bem?",
                 lean_context="USER_ID: test\nNOME: Carlos",
             )
@@ -90,7 +90,7 @@ class TestPlanningAgent:
             # Ambas as tentativas retornam output inválido
             mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-            plan = await run_planning_agent(
+            plan, _ = await run_planning_agent(
                 user_message="mensagem qualquer",
                 lean_context="USER_ID: test\nNOME: Maria",
             )
@@ -115,7 +115,7 @@ class TestPlanningAgent:
                 side_effect=[invalid_response, valid_response]
             )
 
-            plan = await run_planning_agent(
+            plan, _ = await run_planning_agent(
                 user_message="Quero bolsas",
                 lean_context="USER_ID: test\nNOME: Pedro",
             )
@@ -136,6 +136,6 @@ class TestPlanningAgent:
                 mock_client_cls.return_value = mock_client
                 mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-                plan = await run_planning_agent("test", "USER_ID: x")
+                plan, _ = await run_planning_agent("test", "USER_ID: x")
 
             assert plan.intent_category in VALID_CATEGORIES

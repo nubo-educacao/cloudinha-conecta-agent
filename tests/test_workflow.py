@@ -11,6 +11,8 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+from src.contracts.agent_result import AgentResult
+
 from src.models.chat_request import ChatRequest, UIContext
 from src.workflow.engine import run_pipeline
 from src.workflow.system_intents import is_system_intent, handle_system_intent
@@ -97,6 +99,7 @@ none
 ]
 
 MOCK_RESPONSE_CHUNKS = ["Olá! ", "Encontrei algumas informações ", "sobre bolsas para medicina."]
+_EMPTY_AGENT_RESULT = AgentResult(text="", latency_ms=0)
 
 
 class TestPipelineIntegration:
@@ -129,7 +132,7 @@ class TestPipelineIntegration:
             patch("src.workflow.engine.get_supabase_service") as mock_svc,
         ):
             from src.contracts.structured_plan import StructuredPlan, FALLBACK_PLAN
-            mock_plan.return_value = FALLBACK_PLAN
+            mock_plan.return_value = (FALLBACK_PLAN, _EMPTY_AGENT_RESULT)
             mock_fs.return_value = ""
             mock_profile.return_value = {"full_name": "Ana", "age": 24}
             mock_svc.return_value = MagicMock()
@@ -140,7 +143,8 @@ class TestPipelineIntegration:
 
             async def mock_response_gen(*args, **kwargs):
                 for chunk in MOCK_RESPONSE_CHUNKS:
-                    yield chunk
+                    yield chunk, None
+                yield "", _EMPTY_AGENT_RESULT
 
             mock_reasoning.return_value = mock_reasoning_gen()
             mock_response.return_value = mock_response_gen()
@@ -168,7 +172,7 @@ class TestPipelineIntegration:
             patch("src.workflow.engine.get_supabase_service") as mock_svc,
         ):
             from src.contracts.structured_plan import FALLBACK_PLAN
-            mock_plan.return_value = FALLBACK_PLAN
+            mock_plan.return_value = (FALLBACK_PLAN, _EMPTY_AGENT_RESULT)
             mock_fs.return_value = ""
             mock_profile.return_value = {"full_name": "Carlos", "age": 20}
             mock_svc.return_value = MagicMock()
@@ -179,7 +183,8 @@ class TestPipelineIntegration:
 
             async def mock_response_gen(*args, **kwargs):
                 for chunk in MOCK_RESPONSE_CHUNKS:
-                    yield chunk
+                    yield chunk, None
+                yield "", _EMPTY_AGENT_RESULT
 
             mock_reasoning.return_value = mock_reasoning_gen()
             mock_response.return_value = mock_response_gen()
@@ -210,7 +215,7 @@ class TestPipelineIntegration:
             patch("src.workflow.engine.get_supabase_service") as mock_svc,
         ):
             from src.contracts.structured_plan import FALLBACK_PLAN
-            mock_plan.return_value = FALLBACK_PLAN
+            mock_plan.return_value = (FALLBACK_PLAN, _EMPTY_AGENT_RESULT)
             mock_fs.return_value = ""
             mock_profile.return_value = {"full_name": "Maria"}
             mock_svc.return_value = MagicMock()
@@ -219,7 +224,8 @@ class TestPipelineIntegration:
                 yield {"type": "reasoning_complete", "report": "## INTENT\nTest\n## DATA\n-\n## REASONING\nok\n## ACTION\nnone\n## SUGGESTED_FOLLOWUPS\n"}
 
             async def mock_response_gen(*args, **kwargs):
-                yield "Resposta de teste"
+                yield "Resposta de teste", None
+                yield "", _EMPTY_AGENT_RESULT
 
             mock_reasoning.return_value = mock_reasoning_gen()
             mock_response.return_value = mock_response_gen()
