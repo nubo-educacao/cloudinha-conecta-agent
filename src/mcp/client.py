@@ -6,8 +6,10 @@ Converte tool schemas MCP → GenAI FunctionDeclarations automaticamente.
 Uso típico:
     async with get_mcp_session(settings.MCP_SERVER_URL) as session:
         tools = await list_genai_tools(session)
+        summary = await list_tools_summary(session)
         result = await call_mcp_tool(session, "search_opportunities", {"query": "medicina"})
 """
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -19,18 +21,33 @@ from google.genai import types
 
 logger = logging.getLogger(__name__)
 
+_MCP_CONNECT_TIMEOUT = 10.0  # segundos
+
 
 @asynccontextmanager
 async def get_mcp_session(mcp_url: str) -> AsyncGenerator[ClientSession, None]:
-    """Context manager que abre uma sessão MCP via SSE.
+    """Context manager que abre uma sessão MCP via SSE com timeout de conexão.
 
     Args:
         mcp_url: URL do MCP Server (ex: 'http://localhost:8001/sse')
+
+    Raises:
+        asyncio.TimeoutError: Se a conexão não for estabelecida em _MCP_CONNECT_TIMEOUT segundos
     """
-    async with sse_client(mcp_url) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            yield session
+    logger.debug(f"Conectando ao MCP Server: {mcp_url}")
+    try:
+        async with asyncio.timeout(_MCP_CONNECT_TIMEOUT):
+            async with sse_client(mcp_url) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    logger.debug("Sessão MCP inicializada com sucesso")
+                    yield session
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout ao conectar ao MCP Server ({_MCP_CONNECT_TIMEOUT}s): {mcp_url}")
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao conectar ao MCP Server: {e}")
+        raise
 
 
 async def list_genai_tools(session: ClientSession) -> list[types.Tool]:
@@ -62,6 +79,24 @@ async def list_genai_tools(session: ClientSession) -> list[types.Tool]:
         return []
 
     return [types.Tool(function_declarations=declarations)]
+
+
+async def list_tools_summary(session: ClientSession) -> str:
+    """Retorna uma string sumarizada das tools para injeção em prompts de texto (ex: Planning)."""
+    try:
+        tools_response = await session.list_tools()
+        if not tools_response.tools:
+            return "- nenhuma ferramenta disponível"
+        
+        lines = []
+        for tool in tools_response.tools:
+            desc = tool.description or "Sem descrição"
+            lines.append(f"- {tool.name}: {desc}")
+            
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Erro ao listar sumário de tools: {e}")
+        return "- erro ao carger ferramentas do MCP"
 
 
 async def call_mcp_tool(session: ClientSession, name: str, args: dict) -> dict:

@@ -11,6 +11,8 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+from src.contracts.agent_result import AgentResult
+
 from src.models.chat_request import ChatRequest, UIContext
 from src.workflow.engine import run_pipeline
 from src.workflow.system_intents import is_system_intent, handle_system_intent
@@ -45,14 +47,19 @@ class TestSystemIntentInterceptor:
         assert result["type"] == "pong"
 
     @pytest.mark.asyncio
-    async def test_system_intent_does_not_call_supabase_insert(self, system_intent_request):
-        """System intent NÃO deve persistir mensagem em chat_messages."""
+    async def test_lightweight_system_intent_does_not_persist(self):
+        """Intents leves (ping, etc) NÃO devem persistir no banco."""
         mock_supabase = MagicMock()
-        mock_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+        req = ChatRequest(
+            chatInput="ping",
+            userId=uuid4(),
+            active_profile_id=uuid4(),
+            sessionId="sys-test",
+            intent_type="system_intent",
+        )
+        await handle_system_intent(req, mock_supabase)
 
-        await handle_system_intent(system_intent_request, mock_supabase)
-
-        # chat_messages.insert NUNCA deve ser chamado para system intents
+        # insert NUNCA deve ser chamado para intents leves
         insert_calls = [
             call for call in mock_supabase.method_calls
             if "insert" in str(call) and "chat_messages" in str(call)
@@ -97,6 +104,7 @@ none
 ]
 
 MOCK_RESPONSE_CHUNKS = ["Olá! ", "Encontrei algumas informações ", "sobre bolsas para medicina."]
+_EMPTY_AGENT_RESULT = AgentResult(text="", latency_ms=0)
 
 
 class TestPipelineIntegration:
@@ -129,7 +137,7 @@ class TestPipelineIntegration:
             patch("src.workflow.engine.get_supabase_service") as mock_svc,
         ):
             from src.contracts.structured_plan import StructuredPlan, FALLBACK_PLAN
-            mock_plan.return_value = FALLBACK_PLAN
+            mock_plan.return_value = (FALLBACK_PLAN, _EMPTY_AGENT_RESULT)
             mock_fs.return_value = ""
             mock_profile.return_value = {"full_name": "Ana", "age": 24}
             mock_svc.return_value = MagicMock()
@@ -140,7 +148,8 @@ class TestPipelineIntegration:
 
             async def mock_response_gen(*args, **kwargs):
                 for chunk in MOCK_RESPONSE_CHUNKS:
-                    yield chunk
+                    yield chunk, None
+                yield "", _EMPTY_AGENT_RESULT
 
             mock_reasoning.return_value = mock_reasoning_gen()
             mock_response.return_value = mock_response_gen()
@@ -168,7 +177,7 @@ class TestPipelineIntegration:
             patch("src.workflow.engine.get_supabase_service") as mock_svc,
         ):
             from src.contracts.structured_plan import FALLBACK_PLAN
-            mock_plan.return_value = FALLBACK_PLAN
+            mock_plan.return_value = (FALLBACK_PLAN, _EMPTY_AGENT_RESULT)
             mock_fs.return_value = ""
             mock_profile.return_value = {"full_name": "Carlos", "age": 20}
             mock_svc.return_value = MagicMock()
@@ -179,7 +188,8 @@ class TestPipelineIntegration:
 
             async def mock_response_gen(*args, **kwargs):
                 for chunk in MOCK_RESPONSE_CHUNKS:
-                    yield chunk
+                    yield chunk, None
+                yield "", _EMPTY_AGENT_RESULT
 
             mock_reasoning.return_value = mock_reasoning_gen()
             mock_response.return_value = mock_response_gen()
@@ -210,7 +220,7 @@ class TestPipelineIntegration:
             patch("src.workflow.engine.get_supabase_service") as mock_svc,
         ):
             from src.contracts.structured_plan import FALLBACK_PLAN
-            mock_plan.return_value = FALLBACK_PLAN
+            mock_plan.return_value = (FALLBACK_PLAN, _EMPTY_AGENT_RESULT)
             mock_fs.return_value = ""
             mock_profile.return_value = {"full_name": "Maria"}
             mock_svc.return_value = MagicMock()
@@ -219,7 +229,8 @@ class TestPipelineIntegration:
                 yield {"type": "reasoning_complete", "report": "## INTENT\nTest\n## DATA\n-\n## REASONING\nok\n## ACTION\nnone\n## SUGGESTED_FOLLOWUPS\n"}
 
             async def mock_response_gen(*args, **kwargs):
-                yield "Resposta de teste"
+                yield "Resposta de teste", None
+                yield "", _EMPTY_AGENT_RESULT
 
             mock_reasoning.return_value = mock_reasoning_gen()
             mock_response.return_value = mock_response_gen()
@@ -237,3 +248,55 @@ class TestPipelineIntegration:
             serialized = json.dumps(event, ensure_ascii=False)
             reparsed = json.loads(serialized)
             assert reparsed["type"] in {"text", "tool_start", "tool_end", "suggestions", "error"}
+
+    @pytest.mark.asyncio
+    async def test_pipeline_persists_system_message(self):
+        """Pipeline deve persistir com sender='system' quando intent_type é system_intent_pipeline."""
+        req = ChatRequest(
+            chatInput="Trigger message",
+            userId=uuid4(),
+            active_profile_id=uuid4(),
+            sessionId="sys-test",
+            intent_type="system_intent_pipeline",
+        )
+        
+        mock_supabase = MagicMock()
+        # Mock para o histórico recente
+        mock_supabase.table.return_value.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+        # Mock para o perfil
+        mock_supabase.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = {"full_name": "Test"}
+        
+        with (
+            patch("src.workflow.engine.run_planning_agent", new_callable=AsyncMock) as mock_plan,
+            patch("src.workflow.engine.run_reasoning_agent") as mock_reasoning,
+            patch("src.workflow.engine.run_response_agent") as mock_response,
+            patch("src.workflow.engine.resolve_system_prompt", return_value=""),
+            patch("src.workflow.engine.retrieve_few_shot_examples", return_value=""),
+            patch("src.workflow.engine.get_supabase_service", return_value=mock_supabase),
+        ):
+            from src.contracts.structured_plan import FALLBACK_PLAN
+            mock_plan.return_value = (FALLBACK_PLAN, _EMPTY_AGENT_RESULT)
+            
+            async def empty_gen(*args, **kwargs):
+                yield {"type": "reasoning_complete", "report": "..."}
+                if False: yield # Deixa o gerador ser um async generator
+                
+            async def resp_gen(*args, **kwargs):
+                yield "ok", None
+                yield "", _EMPTY_AGENT_RESULT
+
+            mock_reasoning.return_value = empty_gen()
+            mock_response.return_value = resp_gen()
+
+            async for _ in run_pipeline(req, mock_supabase):
+                pass
+
+        # Verificar se insert foi chamado com sender='system'
+        # Usamos call_args_list para garantir que pegamos a chamada correta mesmo com múltiplos inserts
+        insert_calls = mock_supabase.table.return_value.insert.call_args_list
+        system_insert = next(
+            (call[0][0] for call in insert_calls if call[0][0].get("sender") == "system"),
+            None
+        )
+        assert system_insert is not None, "Chamada de insert com sender='system' não encontrada"
+        assert system_insert["content"] == "Trigger message"
