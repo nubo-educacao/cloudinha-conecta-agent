@@ -6,6 +6,7 @@ Converte tool schemas MCP → GenAI FunctionDeclarations automaticamente.
 Uso típico:
     async with get_mcp_session(settings.MCP_SERVER_URL) as session:
         tools = await list_genai_tools(session)
+        summary = await list_tools_summary(session)
         result = await call_mcp_tool(session, "search_opportunities", {"query": "medicina"})
 """
 import asyncio
@@ -78,6 +79,24 @@ async def list_genai_tools(session: ClientSession) -> list[types.Tool]:
         return []
 
     return [types.Tool(function_declarations=declarations)]
+
+
+async def list_tools_summary(session: ClientSession) -> str:
+    """Retorna uma string sumarizada das tools para injeção em prompts de texto (ex: Planning)."""
+    try:
+        tools_response = await session.list_tools()
+        if not tools_response.tools:
+            return "- nenhuma ferramenta disponível"
+        
+        lines = []
+        for tool in tools_response.tools:
+            desc = tool.description or "Sem descrição"
+            lines.append(f"- {tool.name}: {desc}")
+            
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Erro ao listar sumário de tools: {e}")
+        return "- erro ao carger ferramentas do MCP"
 
 
 async def call_mcp_tool(session: ClientSession, name: str, args: dict) -> dict:

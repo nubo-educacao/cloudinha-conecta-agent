@@ -12,6 +12,8 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Optional
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+import httpx
 
 from src.models.chat_request import ChatRequest
 
@@ -30,7 +32,7 @@ class PipelineIntent:
     """
     trigger_message: str
     open_drawer: bool = False
-    delay_ms: int = 5000
+    delay_ms: int = 0
 
 
 def is_system_intent(request: ChatRequest) -> bool:
@@ -71,6 +73,12 @@ async def handle_system_intent(request: ChatRequest, supabase) -> dict | Pipelin
     return {"type": "system_ack", "command": command}
 
 
+@retry(
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((httpx.ProtocolError, httpx.RemoteProtocolError, Exception)),
+    reraise=True
+)
 async def _resolve_page_context(supabase, route: str, page_data: dict) -> dict | PipelineIntent:
     """Busca config na tabela system_intents para a rota atual.
 
@@ -111,7 +119,7 @@ async def _resolve_page_context(supabase, route: str, page_data: dict) -> dict |
                     return PipelineIntent(
                         trigger_message=trigger_msg,
                         open_drawer=intent_config.get("open_drawer", False),
-                        delay_ms=intent_config.get("delay_ms", 5000),
+                        delay_ms=intent_config.get("delay_ms", 0),
                     )
             except re.error as e:
                 logger.error(f"Regex inválida no system_intents: '{pattern}' — {e}")
@@ -140,7 +148,11 @@ async def _fill_placeholders(supabase, template: str, route: str, page_data: dic
 
     # Se tem placeholders de oportunidade, buscar dados
     if "{{title}}" in template or "{{institution}}" in template:
-        opp_id = page_data.get("opportunity_id") or route.split("/")[-1]
+        # Limpar a rota para evitar barras no final que quebram o split
+        clean_route = route.strip("/")
+        opp_id = page_data.get("opportunity_id") or (clean_route.split("/")[-1] if "/" in clean_route else clean_route)
+        
+        logger.info(f"Iniciando preenchimento de placeholders. Route: {route} | ID extraído: {opp_id}")
         opp_data = await _fetch_opportunity_data(supabase, opp_id)
         template = template.replace("{{title}}", opp_data.get("title", "esta oportunidade"))
         template = template.replace("{{institution}}", opp_data.get("institution", "esta instituição"))
@@ -148,42 +160,60 @@ async def _fill_placeholders(supabase, template: str, route: str, page_data: dic
     return template
 
 
+@retry(
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((httpx.ProtocolError, httpx.RemoteProtocolError, Exception)),
+    reraise=True
+)
 async def _fetch_opportunity_data(supabase, opp_id: str) -> dict:
-    """Busca dados básicos da oportunidade para preencher placeholders."""
+    """Busca dados básicos da oportunidade pelo unified_id."""
     try:
-        # Tentar v_unified_opportunities primeiro (view unificada)
+        logger.info(f"Buscando v_unified_opportunities para unified_id='{opp_id}'")
         resp = (
             supabase.table("v_unified_opportunities")
-            .select("course_name, institution_name")
-            .eq("id", opp_id)
+            .select("title, provider_name")
+            .eq("unified_id", opp_id)
             .limit(1)
             .execute()
         )
         if resp.data:
             opp = resp.data[0]
+            logger.info(f"Oportunidade encontrada: {opp.get('title')}")
             return {
-                "title": opp.get("course_name", "esta oportunidade"),
-                "institution": opp.get("institution_name", "esta instituição"),
+                "title": opp.get("title", "esta oportunidade"),
+                "institution": opp.get("provider_name", "esta instituição"),
             }
+        
+        logger.warning(f"Oportunidade {opp_id} NÃO encontrada na view v_unified_opportunities")
 
-        # Fallback: partner_opportunities
+        # Fallback: se não achou na view (ou ID puro), tenta partner_opportunities
+        # Remove prefixo se existir para busca direta na tabela
+        pure_uuid = opp_id.split("_")[-1] if "_" in opp_id else opp_id
+        
         resp = (
             supabase.table("partner_opportunities")
             .select("title, partner_institutions(institutions(name))")
-            .eq("id", opp_id)
+            .eq("id", pure_uuid)
             .limit(1)
             .execute()
         )
         if resp.data:
             opp = resp.data[0]
-            inst = (
-                opp.get("partner_institutions", {})
-                .get("institutions", {})
-                .get("name", "esta instituição")
-            )
+            # Supabase joins retornam listas ou objetos dependendo da config, tratamos ambos
+            p_inst = opp.get("partner_institutions")
+            if isinstance(p_inst, list) and len(p_inst) > 0:
+                p_inst = p_inst[0]
+            
+            inst_data = p_inst.get("institutions") if p_inst else {}
+            if isinstance(inst_data, list) and len(inst_data) > 0:
+                inst_data = inst_data[0]
+                
+            inst_name = inst_data.get("name", "esta instituição") if inst_data else "esta instituição"
+            
             return {
                 "title": opp.get("title", "esta oportunidade"),
-                "institution": inst,
+                "institution": inst_name,
             }
     except Exception as e:
         logger.error(f"Erro ao buscar dados de oportunidade {opp_id}: {e}")

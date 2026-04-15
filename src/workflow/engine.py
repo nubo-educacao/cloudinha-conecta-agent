@@ -19,6 +19,7 @@ from src.agents.response import run_response_agent
 from src.contracts.agent_result import AgentResult
 from src.contracts.reasoning_report import parse_reasoning_report, extract_suggestions
 from src.contracts.structured_plan import FALLBACK_PLAN, StructuredPlan
+from src.mcp.client import get_mcp_session, list_tools_summary
 from src.models.chat_events import ErrorEvent, SuggestionsEvent, TextEvent
 from src.models.chat_request import ChatRequest
 from src.services.context_service import build_lean_context
@@ -77,8 +78,11 @@ async def run_pipeline(
     reasoning_prompt = resolve_system_prompt(supabase_service, "reasoning", fallback="")
     response_prompt = resolve_system_prompt(supabase_service, "response", fallback="")
 
-    # Persistir mensagem do usuário
-    session_svc.persist_user_message(request.chatInput)
+    # Persistir mensagem de entrada
+    if request.intent_type == "system_intent_pipeline":
+        session_svc.persist_system_message(request.chatInput)
+    else:
+        session_svc.persist_user_message(request.chatInput)
 
     has_sent_events = False
     full_response_text = ""
@@ -208,12 +212,29 @@ async def _execute_pipeline(
     reasoning_result = _empty_result
     response_result = _empty_result
 
-    # ── Fase 1: Planning ──────────────────────────────────────────────────────
+    # ── Fase 1: Planning (com descoberta dinâmica de tools via MCP) ───────────
     try:
+        # Tenta injetar a lista dinâmica de tools do MCP no prompt do Planning
+        dynamic_tools_summary = ""
+        if mcp_url:
+            try:
+                async with get_mcp_session(mcp_url) as mcp_session:
+                    dynamic_tools_summary = await list_tools_summary(mcp_session)
+            except Exception as e:
+                logger.warning(f"Falha ao obter lista dinâmica de tools no Planning: {e}")
+                dynamic_tools_summary = "- MCP Offline (usando lista interna)"
+
+        # Injetar no prompt (substituindo placeholder ou anexando)
+        final_planning_prompt = planning_prompt or ""
+        if "{{AVAILABLE_TOOLS}}" in final_planning_prompt:
+            final_planning_prompt = final_planning_prompt.replace("{{AVAILABLE_TOOLS}}", dynamic_tools_summary)
+        elif dynamic_tools_summary:
+            final_planning_prompt += f"\n\nFerramentas disponíveis no sistema:\n{dynamic_tools_summary}"
+
         plan, planning_result = await run_planning_agent(
             user_message=request.chatInput,
             lean_context=lean_context,
-            system_prompt=planning_prompt,
+            system_prompt=final_planning_prompt or None,
         )
     except Exception as e:
         logger.error(f"Planning agent error: {e}")

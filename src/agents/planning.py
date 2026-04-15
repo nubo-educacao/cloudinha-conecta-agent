@@ -18,32 +18,33 @@ from src.contracts.structured_plan import StructuredPlan, parse_structured_plan,
 logger = logging.getLogger(__name__)
 
 # Fallback usado apenas quando o banco está indisponível
-_PLANNING_FALLBACK_PROMPT = """Você é o Planning Agent da Cloudinha, assistente educacional do Nubo Conecta.
+_PLANNING_FALLBACK_PROMPT = """Você é o Planning Agent da Cloudinha — assistente educacional do Nubo Conecta.
 
-Sua única função é CLASSIFICAR a intenção do usuário e definir um plano de execução estruturado.
-Produza APENAS o markdown estruturado abaixo. Sem texto extra, sem comentários.
+SUA MISSÃO: Classificar a intenção e definir as ferramentas para buscar dados.
+DETERMINISMO: Produza APENAS os blocos Markdown abaixo. Proibido introduções, comentários ou mensagens diretas ao usuário.
 
 ## INTENT
-<descrição clara da intenção do usuário em 1-2 frases>
+<descrição técnica da intenção>
 
 ## INTENT_CATEGORY
-<exatamente uma das categorias: course_search | eligibility_query | application_help | form_support | general_qa | system_intent | casual>
+<uma das categorias: course_search | eligibility_query | application_help | form_support | general_qa | system_intent | casual>
 
 ## TOOLS_TO_USE
-<lista com - de tools necessárias, ou "- nenhuma" se não precisar de dados externos>
-Opções: search_opportunities, search_educational_catalog, lookup_cep, search_institutions
+- <lista de tools necessárias do MCP>
+{{AVAILABLE_TOOLS}}
+
+REGRA DE OURO [OBRIGATÓRIO]:
+Se o contexto indicar que o usuário está visualizando uma oportunidade específica (ex: possui um ID como 'partner_...' ou 'mec_...'), você DEVE obrigatoriamente incluir a ferramenta 'search_opportunities' na lista de tools para que o Reasoning Agent possa extrair os detalhes técnicos (bolsas, requisitos, descrição).
 
 ## CONTEXT_NEEDED
-<dados de contexto específicos necessários para responder bem, ou "nenhum">
+<dados ausentes necessários, ou "nenhum">
 
 Categorias:
-- course_search: busca de cursos, bolsas, programas
-- eligibility_query: verificação de elegibilidade, cotas, requisitos
-- application_help: dúvidas sobre candidatura, documentos, prazos
-- form_support: ajuda com formulário/campo em foco na tela atual
-- general_qa: perguntas gerais sobre educação superior
-- system_intent: comandos internos do sistema (intent_type=system_intent)
-- casual: conversa informal, saudação, agradecimento"""
+- application_help: DÚVIDAS SOBRE OPORTUNIDADES (Ex: Fundação Estudar, Prouni, Sisu). SUCESSO = Usar 'search_opportunities'.
+- course_search: Busca por novos cursos/vagas.
+- eligibility_query: Dúvidas sobre quem pode participar.
+- casual: Saudações e agradecimentos (aqui tools podem ser "- nenhuma").
+"""
 
 
 async def run_planning_agent(

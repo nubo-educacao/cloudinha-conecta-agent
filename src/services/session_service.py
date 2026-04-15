@@ -47,11 +47,23 @@ class SupabaseSessionService:
             self._supabase.table("chat_messages").insert({
                 "user_id": self._user_id,
                 "session_id": self._session_id,
-                "sender": "model",
+                "sender": "cloudinha",
                 "content": content,
             }).execute()
         except Exception as e:
             logger.error(f"Falha ao persistir mensagem do agente: {e}")
+
+    def persist_system_message(self, content: str) -> None:
+        """Persiste mensagens automáticas do sistema em chat_messages."""
+        try:
+            self._supabase.table("chat_messages").insert({
+                "user_id": self._user_id,
+                "session_id": self._session_id,
+                "sender": "system",
+                "content": content,
+            }).execute()
+        except Exception as e:
+            logger.error(f"Falha ao persistir mensagem de sistema: {e}")
 
     def get_recent_messages(self, limit: int = 5) -> list[dict]:
         """Retorna as últimas N mensagens da sessão atual."""
