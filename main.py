@@ -127,6 +127,24 @@ async def chat(
                 yield json.dumps(event, ensure_ascii=False) + "\n"
         except Exception as e:
             logger.error(f"Erro no gerador NDJSON: {e}")
+            
+            # Log error to database for observability
+            try:
+                import traceback
+                # Sanitize session_id for UUID database field (remove 'session-' prefix if present)
+                db_session_id = request.sessionId.replace("session-", "") if request.sessionId else None
+                
+                supabase.table('agent_errors').insert({
+                    'user_id': request.userId,
+                    'session_id': db_session_id,
+                    'error_type': 'conecta_agent_error',
+                    'error_message': str(e),
+                    'stack_trace': traceback.format_exc(),
+                    'metadata': {'chat_input': request.chatInput}
+                }).execute()
+            except Exception as db_err:
+                logger.error(f"Falha ao logar erro no banco: {db_err}")
+
             error_event = {"type": "error", "message": "Estou com dificuldades de conexão. Tente novamente."}
             yield json.dumps(error_event, ensure_ascii=False) + "\n"
 
