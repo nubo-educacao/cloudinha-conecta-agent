@@ -14,9 +14,9 @@ class Settings(BaseSettings):
     # Gemini
     GOOGLE_API_KEY: str
     TIMEZONE: str = "America/Sao_Paulo"
-    PLANNING_MODEL: str = "gemini-2.0-flash-lite"
-    REASONING_MODEL: str = "gemini-2.0-flash"
-    RESPONSE_MODEL: str = "gemini-2.0-flash"
+    PLANNING_MODEL: str = "gemini-2.5-flash-lite"
+    REASONING_MODEL: str = "gemini-2.5-flash"
+    RESPONSE_MODEL: str = "gemini-2.5-flash"
 
     # MCP SSE embutido no FastAPI — URL padrão usa porta do servidor.
     # Se .env tiver a URL legada (localhost:8001) ela é substituída automaticamente.
