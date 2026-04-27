@@ -221,6 +221,45 @@ class TestMcpServerToolExecution:
         assert "institutions" in result
 
 
+    @pytest.mark.asyncio
+    async def test_list_admin_alerts_returns_alerts_key(self):
+        """list_admin_alerts deve sempre retornar chave 'alerts'."""
+        mock_supabase = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.data = [
+            {"id": "alert_1", "title": "Oportunidade expirando", "severity": "warning", "status": "pending"}
+        ]
+        (
+            mock_supabase.table.return_value
+            .select.return_value
+            .eq.return_value
+            .order.return_value
+            .limit.return_value
+            .execute.return_value
+        ) = mock_resp
+
+        with patch("src.mcp.server.get_supabase_service", return_value=mock_supabase):
+            from src.mcp.server import list_admin_alerts
+            result_str = await list_admin_alerts()
+
+        result = json.loads(result_str)
+        assert "alerts" in result
+        assert "count" in result
+        assert result["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_list_admin_alerts_returns_error_on_failure(self):
+        """Contrato negativo: erro de DB deve retornar chave 'error'."""
+        with patch("src.mcp.server.get_supabase_service") as mock_svc:
+            mock_svc.return_value.table.side_effect = Exception("DB offline")
+            from src.mcp.server import list_admin_alerts
+            result_str = await list_admin_alerts()
+
+        result = json.loads(result_str)
+        assert "error" in result
+        assert "alerts" in result
+
+
 class TestCatalogSecurityBlocklist:
     """SEGURANÇA LGPD: search_educational_catalog deve rejeitar acesso a tabelas privadas."""
 

@@ -201,6 +201,37 @@ async def lookup_cep(cep: str) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+@mcp.tool()
+async def list_admin_alerts(status: str = "pending", limit: int = 10) -> str:
+    """Lista alertas operacionais do Action Center para administradores.
+
+    Retorna alertas sobre oportunidades expirando, periodos MEC abrindo/encerrando,
+    e outros eventos que exigem acao do admin.
+
+    Args:
+        status: Filtro de status — 'pending', 'acknowledged', 'resolved', 'dismissed' (padrao: 'pending')
+        limit: Maximo de resultados (padrao: 10)
+
+    Returns:
+        JSON com lista de alertas e contagem.
+    """
+    supabase = get_supabase_service()
+    try:
+        response = (
+            supabase.table("admin_alerts")
+            .select("*")
+            .eq("status", status)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        data = response.data or []
+        return json.dumps({"alerts": data, "count": len(data)}, ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error(f"list_admin_alerts error: {e}")
+        return json.dumps({"error": str(e), "alerts": []})
+
+
 # ─── Entrypoint ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
