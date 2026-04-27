@@ -69,10 +69,13 @@ def _fallback_schema() -> str:
   - unified_id: text
   - title: text
   - provider_name: text
-  - opportunity_type: text (bolsa | curso | programa)
+  - type: text (sisu | prouni | partner)
+  - category: text
   - is_partner: boolean
-  - deadline: date
-  - state: text
+  - location: text
+  - status: text
+  - starts_at: timestamptz
+  - ends_at: timestamptz
 
 **user_profiles**
   - id: uuid

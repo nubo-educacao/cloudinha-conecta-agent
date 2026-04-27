@@ -142,7 +142,7 @@ async def search_opportunities(
     try:
         q = (
             supabase.table("v_unified_opportunities")
-            .select("unified_id, title, provider_name, opportunity_type, is_partner, deadline, state")
+            .select("unified_id, title, provider_name, type, is_partner, status, starts_at, ends_at, location")
             .ilike("title", f"%{query}%")
             .limit(limit)
         )

@@ -139,6 +139,33 @@ class TestMcpServerToolExecution:
         assert result["count"] == 1
 
     @pytest.mark.asyncio
+    async def test_search_opportunities_selects_correct_columns(self):
+        """search_opportunities deve usar status/starts_at/ends_at (não deadline/state)."""
+        mock_supabase = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.data = []
+        (
+            mock_supabase.table.return_value
+            .select.return_value
+            .ilike.return_value
+            .limit.return_value
+            .execute.return_value
+        ) = mock_resp
+
+        with patch("src.mcp.server.get_supabase_service", return_value=mock_supabase):
+            from src.mcp.server import search_opportunities
+            await search_opportunities(query="teste", limit=5)
+
+        select_call = mock_supabase.table.return_value.select
+        select_arg = select_call.call_args[0][0]
+        # Deve conter as colunas corretas
+        for col in ("status", "starts_at", "ends_at", "location"):
+            assert col in select_arg, f"Coluna '{col}' ausente no SELECT: {select_arg}"
+        # Não deve conter colunas legadas
+        for col in ("deadline", "state"):
+            assert col not in select_arg, f"Coluna legada '{col}' ainda presente no SELECT: {select_arg}"
+
+    @pytest.mark.asyncio
     async def test_search_opportunities_returns_error_key_on_failure(self):
         """Contrato negativo: erro de DB deve retornar chave 'error', não raise."""
         with patch("src.mcp.server.get_supabase_service") as mock_svc:
