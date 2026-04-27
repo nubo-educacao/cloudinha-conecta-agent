@@ -19,7 +19,10 @@ def build_lean_context(
     """
     parts: list[str] = []
 
-    # 1. Identidade
+    # 1. Identidade e Tempo
+    import datetime
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-3))) # America/Sao_Paulo
+    parts.append(f"DATA/HORA ATUAL: {now.strftime('%d/%m/%Y %H:%M:%S')}")
     parts.append(f"USER_ID: {user_id}")
     parts.append(f"ACTIVE_PROFILE_ID: {active_profile_id}")
     parts.append(f"NOME: {full_name or 'Desconhecido'}")

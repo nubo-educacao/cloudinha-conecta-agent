@@ -80,15 +80,111 @@ def _validate_catalog_query(sql_query: str) -> str | None:
         )
     return None
 
+# Schema estático de v_unified_opportunities — fallback quando information_schema não a retorna
+_STATIC_VIEW_SCHEMA = [
+    {"column": "unified_id", "type": "text", "nullable": False},
+    {"column": "title", "type": "text", "nullable": False},
+    {"column": "provider_name", "type": "text", "nullable": True},
+    {"column": "type", "type": "text", "nullable": False, "values": "sisu | prouni | partner"},
+    {"column": "category", "type": "text", "nullable": True},
+    {"column": "is_partner", "type": "boolean", "nullable": False},
+    {"column": "location", "type": "text", "nullable": True},
+    {"column": "badges", "type": "jsonb", "nullable": True},
+    {"column": "status", "type": "text", "nullable": True, "values": "approved"},
+    {"column": "starts_at", "type": "timestamptz", "nullable": True},
+    {"column": "ends_at", "type": "timestamptz", "nullable": True},
+    {"column": "created_at", "type": "timestamptz", "nullable": True},
+    {"column": "external_redirect_url", "type": "text", "nullable": True},
+    {"column": "external_redirect_enabled", "type": "boolean", "nullable": True},
+]
+
 
 # ─── Tools ────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def describe_catalog_schema(table_name: str = "") -> str:
+    """Retorna o schema (colunas, tipos) das tabelas do catálogo educacional.
+
+    Use ANTES de search_educational_catalog para descobrir quais colunas e
+    valores existem. Isso permite construir queries SQL precisas.
+
+    Tabelas disponíveis no catálogo:
+    - v_unified_opportunities (visão consolidada: bolsas MEC + parceiros)
+    - institutions (universidades, faculdades)
+    - partners (instituições parceiras)
+    - courses (cursos disponíveis)
+    - partner_opportunities (vagas de parceiros)
+    - knowledge_documents (base de conhecimento)
+    - important_dates (calendário educacional)
+
+    Args:
+        table_name: Nome da tabela para descrever. Se vazio, lista todas as tabelas disponíveis com suas colunas.
+
+    Returns:
+        JSON com schema das tabelas (colunas, tipos, nullable).
+    """
+    supabase = get_supabase_service()
+
+    # Tabelas permitidas no catálogo (excluindo dados pessoais LGPD)
+    catalog_tables = [
+        "v_unified_opportunities", "institutions", "partners",
+        "courses", "partner_opportunities", "knowledge_documents",
+        "important_dates",
+    ]
+
+    if table_name and table_name not in catalog_tables:
+        return json.dumps({
+            "error": f"Tabela '{table_name}' não disponível. Tabelas permitidas: {catalog_tables}"
+        })
+
+    target_tables = [table_name] if table_name else catalog_tables
+
+    try:
+        response = supabase.rpc("execute_readonly_query", {
+            "query_text": f"""
+                SELECT table_name, column_name, data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_name IN ({','.join(f"'{t}'" for t in target_tables)})
+                ORDER BY table_name, ordinal_position
+            """
+        }).execute()
+
+        data = response.data or []
+        # Agrupar por tabela
+        schema: dict = {}
+        for row in data:
+            tbl = row["table_name"]
+            schema.setdefault(tbl, []).append({
+                "column": row["column_name"],
+                "type": row["data_type"],
+                "nullable": row["is_nullable"] == "YES",
+            })
+
+        # Fallback: se v_unified_opportunities pedida mas não retornada (view issue)
+        if "v_unified_opportunities" in target_tables and "v_unified_opportunities" not in schema:
+            schema["v_unified_opportunities"] = _STATIC_VIEW_SCHEMA
+
+        return json.dumps({"schema": schema, "tables": list(schema.keys())}, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"describe_catalog_schema error: {e}")
+        return json.dumps({
+            "schema": {"v_unified_opportunities": _STATIC_VIEW_SCHEMA},
+            "tables": ["v_unified_opportunities"],
+            "_note": "Schema estático (fallback). Use search_opportunities para buscas simples.",
+        }, ensure_ascii=False)
+
 
 @mcp.tool()
 async def search_educational_catalog(sql_query: str) -> str:
     """Executa uma consulta SQL read-only no catálogo educacional do Nubo.
 
-    Use esta ferramenta para buscar cursos, bolsas, programas e instituições
-    usando queries SQL livres. Você tem acesso às tabelas:
+    FERRAMENTA PRINCIPAL para buscas complexas. Use para qualquer consulta que
+    envolva filtros, agregações, JOINs ou condições que as outras tools não cobrem.
+
+    Dica: chame describe_catalog_schema primeiro para descobrir colunas e tipos,
+    depois monte a query SQL adequada.
+
+    Tabelas acessíveis:
     - v_unified_opportunities (vagas MEC + parceiros consolidados)
     - institutions (universidades, faculdades, institutos)
     - partners (parceiros do Nubo)
@@ -97,8 +193,13 @@ async def search_educational_catalog(sql_query: str) -> str:
     - knowledge_documents (base de conhecimento)
     - important_dates (calendário educacional)
 
+    Exemplos de uso:
+    - Oportunidades abertas: "SELECT * FROM v_unified_opportunities WHERE status = 'approved' LIMIT 10"
+    - Por tipo: "SELECT * FROM v_unified_opportunities WHERE type = 'prouni' AND status = 'approved'"
+    - Datas: "SELECT title, starts_at, ends_at FROM v_unified_opportunities WHERE ends_at > NOW()"
+
     IMPORTANTE: Tabelas de dados pessoais (user_profiles, users_metadata, etc.)
-    NÃO são acessíveis por esta ferramenta.
+    NÃO são acessíveis por esta ferramenta (proteção LGPD).
 
     Args:
         sql_query: Query SQL SELECT para executar no catálogo educacional.
@@ -124,30 +225,48 @@ async def search_educational_catalog(sql_query: str) -> str:
 
 @mcp.tool()
 async def search_opportunities(
-    query: str,
+    query: str = "",
     opportunity_type: str = "",
-    limit: int = 5,
+    status: str = "approved",
+    limit: int = 10,
 ) -> str:
-    """Busca bolsas, cursos e programas em v_unified_opportunities.
+    """Busca bolsas, cursos e programas no catálogo unificado (v_unified_opportunities).
+
+    Use para encontrar oportunidades educacionais abertas, buscar por termo,
+    ou listar todas as oportunidades disponíveis. A view contém oportunidades
+    MEC (Sisu, Prouni) e de parceiros.
+
+    Todas as oportunidades na view com status 'approved' estão abertas para inscrição.
+    Quando o aluno perguntar sobre oportunidades "abertas" ou "disponíveis",
+    use status='approved' (padrão).
 
     Args:
-        query: Termo de busca (ex: 'medicina', 'bolsa integral', 'FIES')
-        opportunity_type: Filtro opcional — 'bolsa', 'curso' ou 'programa'
-        limit: Máximo de resultados (padrão: 5)
+        query: Termo de busca opcional no título (ex: 'medicina', 'FIES', 'Estudar').
+               Se vazio, retorna oportunidades sem filtro de título.
+        opportunity_type: Filtro por tipo — 'sisu', 'prouni' ou 'partner'. Opcional.
+        status: Filtro pela coluna status da view — 'approved' (abertas/ativas), 'all' (sem filtro). Padrão: 'approved'.
+        limit: Máximo de resultados (padrão: 10)
 
     Returns:
-        JSON com lista de oportunidades encontradas.
+        JSON com lista de oportunidades encontradas incluindo status, starts_at e ends_at.
     """
+
     supabase = get_supabase_service()
     try:
         q = (
             supabase.table("v_unified_opportunities")
             .select("unified_id, title, provider_name, type, is_partner, status, starts_at, ends_at, location")
-            .ilike("title", f"%{query}%")
             .limit(limit)
         )
+        # Filtro de texto no título — só se tiver query
+        if query:
+            q = q.ilike("title", f"%{query}%")
+        # Filtro de tipo de oportunidade
         if opportunity_type:
-            q = q.eq("opportunity_type", opportunity_type)
+            q = q.eq("type", opportunity_type)
+        # Filtro de status — 'all' desabilita o filtro
+        if status and status != "all":
+            q = q.eq("status", status)
 
         response = q.execute()
         data = response.data or []

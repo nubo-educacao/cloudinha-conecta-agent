@@ -4,7 +4,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
     # Supabase
     SUPABASE_URL: str
@@ -14,9 +18,9 @@ class Settings(BaseSettings):
     # Gemini
     GOOGLE_API_KEY: str
     TIMEZONE: str = "America/Sao_Paulo"
-    PLANNING_MODEL: str = "gemini-2.5-flash-lite"
-    REASONING_MODEL: str = "gemini-2.5-flash"
-    RESPONSE_MODEL: str = "gemini-2.5-flash"
+    PLANNING_MODEL: str = "gemini-2.0-flash"
+    REASONING_MODEL: str = "gemini-2.0-flash"
+    RESPONSE_MODEL: str = "gemini-2.0-flash"
 
     # MCP SSE embutido no FastAPI — URL padrão usa porta do servidor.
     # Se .env tiver a URL legada (localhost:8001) ela é substituída automaticamente.
