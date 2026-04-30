@@ -21,7 +21,7 @@ from google.genai import types
 
 logger = logging.getLogger(__name__)
 
-_MCP_CONNECT_TIMEOUT = 10.0  # segundos
+_MCP_CONNECT_TIMEOUT = 120.0  # segundos — multi-turn loop pode demorar
 
 
 @asynccontextmanager
@@ -46,7 +46,7 @@ async def get_mcp_session(mcp_url: str) -> AsyncGenerator[ClientSession, None]:
         logger.error(f"Timeout ao conectar ao MCP Server ({_MCP_CONNECT_TIMEOUT}s): {mcp_url}")
         raise
     except Exception as e:
-        logger.error(f"Erro ao conectar ao MCP Server: {e}")
+        logger.error(f"Erro ao conectar ao MCP Server em {mcp_url}: {e}", exc_info=True)
         raise
 
 
@@ -154,6 +154,9 @@ def _json_schema_to_genai(schema: dict) -> types.Schema:
 
     Suporta: type, properties, required, description.
     Ignores: $schema, additionalProperties, nested $ref.
+
+    IMPORTANTE: Gemini rejeita required=[] (lista vazia) com 400 Bad Request.
+    Passar None quando não há campos required é o comportamento correto.
     """
     schema_type = _TYPE_MAP.get(schema.get("type", "object"), types.Type.OBJECT)
 
@@ -163,14 +166,18 @@ def _json_schema_to_genai(schema: dict) -> types.Schema:
         properties = {
             key: types.Schema(
                 type=_TYPE_MAP.get(val.get("type", "string"), types.Type.STRING),
-                description=val.get("description", ""),
+                description=val.get("description") or None,
             )
             for key, val in raw_props.items()
         }
 
+    # Gemini 400 se required=[] — deve ser None quando vazio
+    required_fields = schema.get("required") or None
+
     return types.Schema(
         type=schema_type,
         properties=properties,
-        required=schema.get("required") or [],
-        description=schema.get("description", ""),
+        required=required_fields,
+        description=schema.get("description") or None,
     )
+

@@ -6,6 +6,7 @@ converte para GenAI FunctionDeclarations, e executa o loop de tool-calling.
 Nenhuma lógica de SQL ou Supabase aqui — toda a lógica de dados fica no MCP Server.
 Dados do usuário (perfil, match) são injetados pelo engine, não buscados via MCP.
 """
+import asyncio
 import json
 import logging
 import time
@@ -13,6 +14,7 @@ from typing import AsyncGenerator
 
 from google import genai
 from google.genai import types
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.config import settings
 from src.contracts.agent_result import AgentResult
@@ -97,14 +99,32 @@ async def run_reasoning_agent(
 
             contents: list = [{"role": "user", "parts": [{"text": prompt}]}]
             captured_text = ""
-            max_turns = 5
+            max_turns = 20
+
+
+            async def _generate_with_retry(contents_snap):
+                """Wraps generate_content with retry for transient 429 / 503 errors."""
+                last_exc = None
+                for attempt in range(3):
+                    try:
+                        return await client.aio.models.generate_content(
+                            model=settings.REASONING_MODEL,
+                            contents=contents_snap,
+                            config=config,
+                        )
+                    except Exception as exc:
+                        err_str = str(exc).lower()
+                        if "429" in err_str or "quota" in err_str or "rate" in err_str:
+                            wait = 2 ** attempt
+                            logger.warning(f"Gemini 429 — aguardando {wait}s antes de retry {attempt+1}/3")
+                            await asyncio.sleep(wait)
+                            last_exc = exc
+                        else:
+                            raise
+                raise last_exc
 
             for turn in range(max_turns):
-                response = await client.aio.models.generate_content(
-                    model=settings.REASONING_MODEL,
-                    contents=contents,
-                    config=config,
-                )
+                response = await _generate_with_retry(contents)
 
                 # Acumular tokens de cada turn
                 if response.usage_metadata:
@@ -161,13 +181,24 @@ async def run_reasoning_agent(
         real_error = e
         if isinstance(e, ExceptionGroup):
             logger.error(
-                f"Reasoning Agent ExceptionGroup ({len(e.exceptions)} sub-exceção(ões)):"
+                f"Reasoning Agent ExceptionGroup ({len(e.exceptions)} sub-exceção(es)):"
             )
             for i, sub_exc in enumerate(e.exceptions, 1):
                 logger.error(f"  [{i}] {type(sub_exc).__name__}: {sub_exc}")
             real_error = e.exceptions[0]
-        logger.error(f"Reasoning Agent erro MCP: {type(real_error).__name__}: {real_error}")
-        yield {"type": "reasoning_error", "error": f"{type(real_error).__name__}: {real_error}"}
+        elif hasattr(e, '__cause__') and e.__cause__:
+            real_error = e.__cause__
+
+        err_str = str(real_error).lower()
+        if "429" in err_str or "quota" in err_str or "rate" in err_str:
+            logger.warning(f"Reasoning Agent: Gemini rate limit atingido")
+            yield {
+                "type": "text",
+                "content": "⚠️ Estou recebendo muitas perguntas ao mesmo tempo. Aguarde alguns segundos e tente novamente!",
+            }
+        else:
+            logger.error(f"Reasoning Agent erro: {type(real_error).__name__}: {real_error}")
+            yield {"type": "reasoning_error", "error": f"{type(real_error).__name__}: {real_error}"}
         return
 
     latency_ms = int((time.time() - t0) * 1000)
