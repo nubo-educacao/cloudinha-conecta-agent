@@ -14,6 +14,9 @@ KEY_TABLES = [
     "student_applications",
     "user_opportunity_matches",
     "partners",
+    "knowledge_documents",
+    "important_dates",
+    "partner_opportunities",
 ]
 
 
@@ -26,14 +29,14 @@ async def get_schema_context(supabase_client) -> str:
 
     logger.info("Schema Discovery: refreshing cache...")
     try:
-        rows = (
-            supabase_client.table("information_schema.columns")
-            .select("table_name, column_name, data_type, is_nullable")
-            .in_("table_name", KEY_TABLES)
-            .order("table_name")
-            .order("ordinal_position")
-            .execute()
-        )
+        rows = supabase_client.rpc("execute_readonly_query", {
+            "query_text": f"""
+                SELECT table_name, column_name, data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_name IN ({','.join(f"'{t}'" for t in KEY_TABLES)})
+                ORDER BY table_name, ordinal_position
+            """
+        }).execute()
         schema_str = _format_schema(rows.data or [])
     except Exception as e:
         logger.warning(f"Schema Discovery: falha ao buscar DDL via information_schema: {e}")

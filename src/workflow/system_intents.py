@@ -68,6 +68,33 @@ async def handle_system_intent(request: ChatRequest, supabase) -> dict | Pipelin
         page_data = request.ui_context.page_data if request.ui_context else {}
         return await _resolve_page_context(supabase, route, page_data)
 
+    if command == "step_change":
+        page_data = request.ui_context.page_data if request.ui_context else {}
+        step = page_data.get("step", "?")
+        institution = page_data.get("institution", "este parceiro")
+        return PipelineIntent(
+            trigger_message=f"O usuário está no step {step} do formulário de {institution}. Ofereça ajuda contextual sobre os campos desta etapa.",
+            open_drawer=True,
+            delay_ms=500,
+        )
+
+    if command == "validation_error":
+        page_data = request.ui_context.page_data if request.ui_context else {}
+        field = page_data.get("field", "um campo")
+        error = page_data.get("error", "erro de validação")
+        return PipelineIntent(
+            trigger_message=f"O campo {field} apresentou erro: {error}. Ajude o usuário a corrigir.",
+            open_drawer=True,
+            delay_ms=0,
+        )
+
+    if command == "welcome_back":
+        return PipelineIntent(
+            trigger_message="Verifique important_dates para hoje e informe proativamente o usuário sobre eventos educacionais relevantes.",
+            open_drawer=True,
+            delay_ms=1000,
+        )
+
     # Comando desconhecido
     logger.warning(f"System intent desconhecido: {command}")
     return {"type": "system_ack", "command": command}

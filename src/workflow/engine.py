@@ -23,6 +23,7 @@ from src.mcp.client import get_mcp_session, list_tools_summary
 from src.models.chat_events import ErrorEvent, SuggestionsEvent, TextEvent
 from src.models.chat_request import ChatRequest
 from src.services.context_service import build_lean_context
+from src.services.schema_discovery import get_schema_context
 from src.services.prompt_service import resolve_system_prompt
 from src.services.retrieval_service import retrieve_few_shot_examples
 from src.services.session_service import SupabaseSessionService
@@ -231,11 +232,25 @@ async def _execute_pipeline(
         elif dynamic_tools_summary:
             final_planning_prompt += f"\n\nFerramentas disponíveis no sistema:\n{dynamic_tools_summary}"
 
+        # Injetar schema das tabelas para orientar o Planning Agent
+        try:
+            schema_ctx = await get_schema_context(supabase_service)
+            if schema_ctx:
+                final_planning_prompt += f"\n\n{schema_ctx}"
+        except Exception as schema_err:
+            logger.warning(f"Schema discovery falhou (non-fatal): {schema_err}")
+
         plan, planning_result = await run_planning_agent(
             user_message=request.chatInput,
             lean_context=lean_context,
             system_prompt=final_planning_prompt or None,
         )
+        if planning_result.parse_failed:
+            _log_tool_error(
+                supabase_service, str(request.userId), request.sessionId,
+                "planning_agent", "Planning Agent falhou ao parsear o plano estruturado (2 tentativas). Usando FALLBACK_PLAN.",
+                error_type="plan_parse_error",
+            )
     except Exception as e:
         logger.error(f"Planning agent error: {e}")
         _log_tool_error(
@@ -271,6 +286,20 @@ async def _execute_pipeline(
             elif event.get("type") == "reasoning_error":
                 # MCP connection error — propaga como ErrorEvent
                 raise RuntimeError(f"MCP error: {event.get('error')}")
+            elif event.get("type") == "tool_error":
+                _log_tool_error(
+                    supabase_service, str(request.userId), request.sessionId,
+                    event.get("tool", "unknown"), event.get("error", ""),
+                    args=event.get("args"),
+                    error_type="tool_error",
+                )
+            elif event.get("type") == "tool_empty_result":
+                _log_tool_error(
+                    supabase_service, str(request.userId), request.sessionId,
+                    event.get("tool", "unknown"), "Tool retornou resultado vazio",
+                    args=event.get("args"),
+                    error_type="tool_empty_result",
+                )
             else:
                 # tool_start / tool_end — emitir AGORA (antes do Response)
                 yield event

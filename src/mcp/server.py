@@ -20,6 +20,7 @@ Execução standalone:
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.server import TransportSecuritySettings
 
@@ -285,25 +286,140 @@ async def search_institutions(query: str, state: str = "") -> str:
         state: Sigla do estado para filtrar (ex: 'SP', 'MG') — opcional
 
     Returns:
-        JSON com lista de instituições encontradas.
+        JSON com lista de instituições encontradas incluindo logo, descrição e tipo.
     """
     supabase = get_supabase_service()
     try:
-        q = (
-            supabase.table("partners")
-            .select("id, name, type, state, is_active")
-            .ilike("name", f"%{query}%")
-            .eq("is_active", True)
-        )
-        if state:
-            q = q.eq("state", state)
+        # Tenta a view enriquecida primeiro; fallback para tabela partners
+        try:
+            q = (
+                supabase.table("v_unified_institutions")
+                .select("id, name, acronym, type, state, location, logo_url, description, brand_color")
+                .or_(f"name.ilike.%{query}%,acronym.ilike.%{query}%")
+            )
+            if state:
+                q = q.eq("state", state)
+            response = q.limit(5).execute()
+        except Exception:
+            q = (
+                supabase.table("partners")
+                .select("id, name, type, state, logo_url, description, brand_color, is_active")
+                .ilike("name", f"%{query}%")
+                .eq("is_active", True)
+            )
+            if state:
+                q = q.eq("state", state)
+            response = q.limit(5).execute()
 
-        response = q.limit(5).execute()
         data = response.data or []
         return json.dumps({"institutions": data, "count": len(data)}, ensure_ascii=False, default=str)
     except Exception as e:
         logger.error(f"search_institutions error: {e}")
         return json.dumps({"error": str(e), "institutions": []})
+
+
+@mcp.tool()
+async def get_opportunity_details(unified_id: str) -> str:
+    """Retorna detalhes completos de uma oportunidade pelo unified_id.
+
+    Inclui título, instituição, tipo, datas, descrição, benefícios e elegibilidade.
+    Use quando o usuário pergunta sobre uma oportunidade específica.
+
+    Args:
+        unified_id: ID unificado da oportunidade (ex: 'partner_uuid' ou 'mec_uuid')
+    """
+    supabase = get_supabase_service()
+    try:
+        resp = supabase.table("v_unified_opportunities") \
+            .select("*") \
+            .eq("unified_id", unified_id) \
+            .limit(1).execute()
+
+        if resp.data:
+            return json.dumps({"opportunity": resp.data[0]}, ensure_ascii=False, default=str)
+
+        # Fallback: buscar em partner_opportunities
+        pure_uuid = unified_id.split("_", 1)[-1] if "_" in unified_id else unified_id
+        resp = supabase.table("partner_opportunities") \
+            .select("*, partner_institutions(institutions(name, state))") \
+            .eq("id", pure_uuid) \
+            .limit(1).execute()
+
+        if resp.data:
+            return json.dumps({"opportunity": resp.data[0]}, ensure_ascii=False, default=str)
+
+        return json.dumps({"error": f"Oportunidade {unified_id} não encontrada"})
+    except Exception as e:
+        logger.error(f"get_opportunity_details error: {e}")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def get_important_dates(date_type: str = "", limit: int = 5) -> str:
+    """Retorna datas importantes do calendário educacional.
+
+    Inclui prazos de Sisu, Prouni, FIES, vestibulares e eventos de parceiros.
+    Use quando o usuário pergunta sobre prazos, datas ou quando algo abre/encerra.
+
+    Args:
+        date_type: Filtro por tipo (ex: 'sisu', 'prouni', 'fies'). Se vazio, retorna todos.
+        limit: Máximo de resultados (padrão: 5)
+    """
+    supabase = get_supabase_service()
+    try:
+        today = datetime.now(timezone.utc).date().isoformat()
+        q = supabase.table("important_dates") \
+            .select("*") \
+            .gte("start_date", today) \
+            .order("start_date") \
+            .limit(limit)
+        if date_type:
+            q = q.eq("type", date_type)
+        resp = q.execute()
+        data = resp.data or []
+        return json.dumps({"dates": data, "count": len(data)}, ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error(f"get_important_dates error: {e}")
+        return json.dumps({"error": str(e), "dates": []})
+
+
+@mcp.tool()
+async def get_knowledge_article(topic: str, limit: int = 3) -> str:
+    """Busca artigos na base de conhecimento do Nubo sobre educação.
+
+    Útil para perguntas sobre processos (como funciona o Sisu, o que é Prouni, etc).
+
+    Args:
+        topic: Termo de busca (ex: 'Sisu', 'nota de corte', 'cotas')
+        limit: Máximo de resultados (padrão: 3)
+    """
+    supabase = get_supabase_service()
+    try:
+        resp = supabase.table("knowledge_documents") \
+            .select("id, title, description, storage_path") \
+            .or_(f"title.ilike.%{topic}%,description.ilike.%{topic}%") \
+            .limit(limit).execute()
+
+        articles = []
+        for doc in (resp.data or []):
+            content = ""
+            if doc.get("storage_path"):
+                try:
+                    file_data = supabase.storage.from_("knowledge-base").download(doc["storage_path"])
+                    content = file_data.decode("utf-8")
+                except Exception as fetch_err:
+                    content = f"[Erro ao carregar conteúdo: {fetch_err}]"
+            articles.append({
+                "id": doc.get("id"),
+                "title": doc.get("title"),
+                "description": doc.get("description"),
+                "content": content,
+            })
+
+        return json.dumps({"articles": articles, "count": len(articles)}, ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error(f"get_knowledge_article error: {e}")
+        return json.dumps({"error": str(e), "articles": []})
 
 
 @mcp.tool()
@@ -318,37 +434,6 @@ async def lookup_cep(cep: str) -> str:
     """
     result = await _cep_lookup(cep)
     return json.dumps(result, ensure_ascii=False)
-
-
-@mcp.tool()
-async def list_admin_alerts(status: str = "pending", limit: int = 10) -> str:
-    """Lista alertas operacionais do Action Center para administradores.
-
-    Retorna alertas sobre oportunidades expirando, periodos MEC abrindo/encerrando,
-    e outros eventos que exigem acao do admin.
-
-    Args:
-        status: Filtro de status — 'pending', 'acknowledged', 'resolved', 'dismissed' (padrao: 'pending')
-        limit: Maximo de resultados (padrao: 10)
-
-    Returns:
-        JSON com lista de alertas e contagem.
-    """
-    supabase = get_supabase_service()
-    try:
-        response = (
-            supabase.table("admin_alerts")
-            .select("*")
-            .eq("status", status)
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        data = response.data or []
-        return json.dumps({"alerts": data, "count": len(data)}, ensure_ascii=False, default=str)
-    except Exception as e:
-        logger.error(f"list_admin_alerts error: {e}")
-        return json.dumps({"error": str(e), "alerts": []})
 
 
 # ─── Entrypoint ───────────────────────────────────────────────────────────────

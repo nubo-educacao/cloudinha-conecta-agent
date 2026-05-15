@@ -4,7 +4,7 @@ Recebe contexto mínimo, classifica a intenção do usuário e emite um Structur
 Zero tools, zero persona. Puro classificador e planejador.
 
 Sessão: InMemorySessionService transient.
-Modelo: gemini-2.0-flash-lite (rápido e barato).
+Modelo: gemini-2.0-flash (rápido e barato).
 """
 import logging
 import time
@@ -54,7 +54,7 @@ async def run_planning_agent(
 ) -> tuple[StructuredPlan, AgentResult]:
     """Executa o Planning Agent para classificar intenção e definir plano.
 
-    Usa gemini-2.0-flash-lite (leve e rápido). Sessão InMemory transient.
+    Usa gemini-2.0-flash (leve e rápido). Sessão InMemory transient.
     Retry manual: 1 retry com prompt corretivo se parse falhar.
 
     Args:
@@ -93,7 +93,7 @@ async def run_planning_agent(
         return plan, result_retry
     except (ValueError, Exception) as e:
         logger.error(f"Planning parse error (tentativa 2): {e}. Usando plano fallback.")
-        return FALLBACK_PLAN, AgentResult(text="", latency_ms=0)
+        return FALLBACK_PLAN, AgentResult(text="", latency_ms=0, parse_failed=True)
 
 
 async def _call_planning(

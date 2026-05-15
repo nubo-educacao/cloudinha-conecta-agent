@@ -14,12 +14,12 @@ from typing import AsyncGenerator
 
 from google import genai
 from google.genai import types
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.config import settings
 from src.contracts.agent_result import AgentResult
 from src.contracts.structured_plan import StructuredPlan
 from src.mcp.client import get_mcp_session, list_genai_tools, call_mcp_tool
+from src.mcp.in_process import list_genai_tools_in_process, call_mcp_tool_in_process
 from src.models.chat_events import ToolStartEvent, ToolEndEvent
 
 logger = logging.getLogger(__name__)
@@ -61,12 +61,15 @@ async def run_reasoning_agent(
 ) -> AsyncGenerator[dict, None]:
     """Executa o Reasoning Agent via MCP Client.
 
-    Conecta ao nubo-tools MCP Server, converte as tools para GenAI FunctionDeclarations,
-    e executa o loop de tool-calling com streaming de eventos UX.
+    Conecta ao nubo-tools MCP Server (via SSE ou in-process se localhost),
+    converte as tools para GenAI FunctionDeclarations, e executa o loop de
+    tool-calling com streaming de eventos UX.
 
     Emite:
       - ToolStartEvent antes de cada chamada de tool
       - ToolEndEvent após cada chamada de tool
+      - {"type": "tool_error", ...} quando tool retorna erro (consumido pelo engine)
+      - {"type": "tool_empty_result", ...} quando tool retorna vazio (consumido pelo engine)
       - {"type": "reasoning_complete", "report": <markdown>, "result": AgentResult} ao final
 
     Args:
@@ -81,14 +84,26 @@ async def run_reasoning_agent(
     instruction = system_prompt or _REASONING_FALLBACK_PROMPT
     prompt = _build_reasoning_prompt(plan, lean_context, few_shot_examples)
 
+    # Detectar se a URL aponta para localhost — usar in-process para evitar loopback HTTP
+    _use_in_process = "localhost" in url or "127.0.0.1" in url
+
     t0 = time.time()
     total_input_tokens = 0
     total_output_tokens = 0
     all_tools_used: list[dict] = []
+    captured_text = ""
 
     try:
-        async with get_mcp_session(url) as mcp_session:
-            genai_tools = await list_genai_tools(mcp_session)
+        # ── Listar tools ──────────────────────────────────────────────────────
+        if _use_in_process:
+            logger.info(f"[Reasoning] Usando in-process MCP (URL={url})")
+            genai_tools = await list_genai_tools_in_process()
+        else:
+            logger.info(f"[Reasoning] Usando SSE MCP (URL={url})")
+
+        # ── Executar loop de tool-calling ─────────────────────────────────────
+        async def _do_loop(call_tool_fn) -> AsyncGenerator[dict, None]:
+            nonlocal total_input_tokens, total_output_tokens, captured_text
 
             config = types.GenerateContentConfig(
                 system_instruction=instruction,
@@ -96,14 +111,10 @@ async def run_reasoning_agent(
                 temperature=0.2,
                 max_output_tokens=2048,
             )
-
             contents: list = [{"role": "user", "parts": [{"text": prompt}]}]
-            captured_text = ""
             max_turns = 20
 
-
             async def _generate_with_retry(contents_snap):
-                """Wraps generate_content with retry for transient 429 / 503 errors."""
                 last_exc = None
                 for attempt in range(3):
                     try:
@@ -123,10 +134,9 @@ async def run_reasoning_agent(
                             raise
                 raise last_exc
 
-            for turn in range(max_turns):
+            for _turn in range(max_turns):
                 response = await _generate_with_retry(contents)
 
-                # Acumular tokens de cada turn
                 if response.usage_metadata:
                     total_input_tokens += response.usage_metadata.prompt_token_count or 0
                     total_output_tokens += response.usage_metadata.candidates_token_count or 0
@@ -145,14 +155,23 @@ async def run_reasoning_agent(
                         fn_args = dict(part.function_call.args) if part.function_call.args else {}
 
                         all_tools_used.append({"name": fn_name, "args": fn_args})
-
-                        # Emitir tool_start ANTES de chamar (UX badge "pesquisando...")
                         yield ToolStartEvent(tool=fn_name, args=fn_args).model_dump()
 
-                        # Executar via MCP — zero SQL aqui
-                        tool_result = await call_mcp_tool(mcp_session, fn_name, fn_args)
+                        tool_result = await call_tool_fn(fn_name, fn_args)
 
-                        # Emitir tool_end com output
+                        # Telemetria: erros e resultados vazios de tools
+                        if "error" in tool_result:
+                            logger.warning(
+                                f"[tool_error] tool={fn_name} args={fn_args} error={tool_result['error']}"
+                            )
+                            yield {"type": "tool_error", "tool": fn_name, "args": fn_args, "error": tool_result["error"]}
+                        elif (
+                            tool_result.get("result") == ""
+                            or (tool_result.get("results") == [] and tool_result.get("count") == 0)
+                        ):
+                            logger.warning(f"[tool_empty_result] tool={fn_name} args={fn_args}")
+                            yield {"type": "tool_empty_result", "tool": fn_name, "args": fn_args}
+
                         yield ToolEndEvent(
                             tool=fn_name,
                             output=json.dumps(tool_result, ensure_ascii=False),
@@ -175,6 +194,19 @@ async def run_reasoning_agent(
                     contents.append({"role": "user", "parts": function_responses})
                 else:
                     break
+
+        if _use_in_process:
+            async for ev in _do_loop(call_mcp_tool_in_process):
+                yield ev
+        else:
+            async with get_mcp_session(url) as mcp_session:
+                genai_tools = await list_genai_tools(mcp_session)
+
+                async def _sse_call_tool(name: str, args: dict) -> dict:
+                    return await call_mcp_tool(mcp_session, name, args)
+
+                async for ev in _do_loop(_sse_call_tool):
+                    yield ev
 
     except Exception as e:
         # Unwrap ExceptionGroup (anyio/asyncio TaskGroup) para expor a sub-exceção real

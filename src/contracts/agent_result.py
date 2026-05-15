@@ -25,3 +25,6 @@ class AgentResult:
     """Lista de tools chamadas. Apenas o Reasoning Agent popula este campo.
     Formato: [{"name": "tool_name", "args": {...}}]
     """
+
+    parse_failed: bool = False
+    """True quando o Planning Agent falhou a parsear o plano e usou FALLBACK_PLAN."""
