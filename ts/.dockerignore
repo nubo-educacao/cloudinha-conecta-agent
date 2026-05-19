@@ -5,5 +5,3 @@ dist
 !.env.example
 tests
 *.test.ts
-tsconfig.json
-tsconfig.test.json
