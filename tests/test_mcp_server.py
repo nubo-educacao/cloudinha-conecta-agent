@@ -31,6 +31,10 @@ class TestMcpServerRegistration:
             "lookup_cep",
             "search_institutions",
             "search_opportunities",
+            "get_opportunity_details",
+            "get_important_dates",
+            "get_knowledge_article",
+            "describe_catalog_schema",
         }
         assert expected.issubset(registered_names), (
             f"Tools públicas faltando: {expected - registered_names}"
@@ -124,8 +128,9 @@ class TestMcpServerToolExecution:
         (
             mock_supabase.table.return_value
             .select.return_value
-            .ilike.return_value
             .limit.return_value
+            .ilike.return_value
+            .eq.return_value
             .execute.return_value
         ) = mock_resp
 
@@ -147,8 +152,9 @@ class TestMcpServerToolExecution:
         (
             mock_supabase.table.return_value
             .select.return_value
-            .ilike.return_value
             .limit.return_value
+            .ilike.return_value
+            .eq.return_value
             .execute.return_value
         ) = mock_resp
 
@@ -222,42 +228,54 @@ class TestMcpServerToolExecution:
 
 
     @pytest.mark.asyncio
-    async def test_list_admin_alerts_returns_alerts_key(self):
-        """list_admin_alerts deve sempre retornar chave 'alerts'."""
+    async def test_get_opportunity_details_returns_opportunity_key(self):
+        """get_opportunity_details deve retornar chave 'opportunity'."""
         mock_supabase = MagicMock()
         mock_resp = MagicMock()
         mock_resp.data = [
-            {"id": "alert_1", "title": "Oportunidade expirando", "severity": "warning", "status": "pending"}
+            {"unified_id": "mec_1", "title": "Bolsa Medicina USP"}
         ]
         (
             mock_supabase.table.return_value
             .select.return_value
             .eq.return_value
+            .limit.return_value
+            .execute.return_value
+        ) = mock_resp
+
+        with patch("src.mcp.server.get_supabase_service", return_value=mock_supabase):
+            from src.mcp.server import get_opportunity_details
+            result_str = await get_opportunity_details("mec_1")
+
+        result = json.loads(result_str)
+        assert "opportunity" in result
+        assert result["opportunity"]["unified_id"] == "mec_1"
+
+    @pytest.mark.asyncio
+    async def test_get_important_dates_returns_dates_key(self):
+        """get_important_dates deve retornar chave 'dates'."""
+        mock_supabase = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.data = [
+            {"id": "date_1", "title": "Inscrições Sisu"}
+        ]
+        (
+            mock_supabase.table.return_value
+            .select.return_value
+            .gte.return_value
             .order.return_value
             .limit.return_value
             .execute.return_value
         ) = mock_resp
 
         with patch("src.mcp.server.get_supabase_service", return_value=mock_supabase):
-            from src.mcp.server import list_admin_alerts
-            result_str = await list_admin_alerts()
+            from src.mcp.server import get_important_dates
+            result_str = await get_important_dates()
 
         result = json.loads(result_str)
-        assert "alerts" in result
+        assert "dates" in result
         assert "count" in result
         assert result["count"] == 1
-
-    @pytest.mark.asyncio
-    async def test_list_admin_alerts_returns_error_on_failure(self):
-        """Contrato negativo: erro de DB deve retornar chave 'error'."""
-        with patch("src.mcp.server.get_supabase_service") as mock_svc:
-            mock_svc.return_value.table.side_effect = Exception("DB offline")
-            from src.mcp.server import list_admin_alerts
-            result_str = await list_admin_alerts()
-
-        result = json.loads(result_str)
-        assert "error" in result
-        assert "alerts" in result
 
 
 class TestCatalogSecurityBlocklist:
