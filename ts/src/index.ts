@@ -11,11 +11,12 @@ const app = express();
 app.use(express.json());
 
 // CORS
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? "http://localhost:3000").split(",");
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? "http://localhost:3000").split(",").map(o => o.trim());
+const ALLOW_ALL_ORIGINS = ALLOWED_ORIGINS.includes("*");
 app.use((req, res, next) => {
   const origin = req.headers.origin ?? "";
-  if (ALLOWED_ORIGINS.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
+  if (ALLOW_ALL_ORIGINS || ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", ALLOW_ALL_ORIGINS ? "*" : origin);
   }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
