@@ -10,16 +10,10 @@ import type { PipelineIntent } from "./services/system-intents.js";
 const app = express();
 
 // CORS MUST BE THE FIRST MIDDLEWARE
-// Otherwise, errors thrown by express.json() (like PayloadTooLarge) will not have CORS headers
-// and the browser will show a false "CORS Error" instead of the real error.
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? "http://localhost:3000").split(",").map(o => o.trim());
-const ALLOW_ALL_ORIGINS = ALLOWED_ORIGINS.includes("*");
+// Always reflect the requesting origin to prevent credential issues and env var mismatches
 app.use((req, res, next) => {
-  const origin = req.headers.origin ?? "";
-  if (ALLOW_ALL_ORIGINS || ALLOWED_ORIGINS.includes(origin)) {
-    // Always reflect the requesting origin to prevent credential issues with '*'
-    res.setHeader("Access-Control-Allow-Origin", origin || "*");
-  }
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   
   // Dynamically allow requested headers (useful for tracing headers like sentry-trace)
