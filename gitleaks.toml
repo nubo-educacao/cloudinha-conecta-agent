@@ -1,0 +1,8 @@
+[allowlist]
+paths = [
+    '''scratch-.*\.cjs''',
+    '''scratch/''',
+    '''test-enrich\.js''',
+    '''test-detail\.js''',
+    '''scratch_.*\.sql'''
+]
