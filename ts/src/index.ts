@@ -16,10 +16,18 @@ const ALLOW_ALL_ORIGINS = ALLOWED_ORIGINS.includes("*");
 app.use((req, res, next) => {
   const origin = req.headers.origin ?? "";
   if (ALLOW_ALL_ORIGINS || ALLOWED_ORIGINS.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", ALLOW_ALL_ORIGINS ? "*" : origin);
+    // Always reflect the requesting origin to prevent credential issues with '*'
+    res.setHeader("Access-Control-Allow-Origin", origin || "*");
   }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  
+  // Dynamically allow requested headers (useful for tracing headers like sentry-trace)
+  if (req.headers["access-control-request-headers"]) {
+    res.setHeader("Access-Control-Allow-Headers", req.headers["access-control-request-headers"]);
+  } else {
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  }
+
   if (req.method === "OPTIONS") {
     res.sendStatus(204);
     return;
