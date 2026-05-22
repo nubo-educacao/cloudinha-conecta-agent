@@ -8,9 +8,10 @@ import { getSupabaseAnon } from "./services/supabase.js";
 import type { PipelineIntent } from "./services/system-intents.js";
 
 const app = express();
-app.use(express.json());
 
-// CORS
+// CORS MUST BE THE FIRST MIDDLEWARE
+// Otherwise, errors thrown by express.json() (like PayloadTooLarge) will not have CORS headers
+// and the browser will show a false "CORS Error" instead of the real error.
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? "http://localhost:3000").split(",").map(o => o.trim());
 const ALLOW_ALL_ORIGINS = ALLOWED_ORIGINS.includes("*");
 app.use((req, res, next) => {
@@ -34,6 +35,9 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// Increase limit to 10mb because ui_context can send large page_data or form_state
+app.use(express.json({ limit: '10mb' }));
 
 app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", version: "2.0.0", arch: "react" });
