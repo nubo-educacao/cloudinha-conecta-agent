@@ -5,6 +5,7 @@ import { getSupabaseAnon, getSupabaseService } from "../services/supabase.js";
 import {
   getAgentPrompt,
   getSchemaContext,
+  getFewShotExamples,
   buildSystemPrompt,
   buildLeanContext,
 } from "./prompts.js";
@@ -115,9 +116,12 @@ export async function* runPipeline(request: ChatRequest): AsyncGenerator<ChatEve
         return;
       }
 
-      // 4. Build schema context + system prompt
-      const schemaContext = await getSchemaContext(supabaseAnon);
-      const systemPrompt = buildSystemPrompt(schemaContext, promptRow);
+      // 4. Build schema context + few-shot examples + system prompt
+      const [schemaContext, fewShotBlock] = await Promise.all([
+        getSchemaContext(supabaseAnon),
+        getFewShotExamples(supabaseAnon),
+      ]);
+      const systemPrompt = buildSystemPrompt(schemaContext, promptRow, fewShotBlock);
 
       // 5. Build lean context (no recent_messages — injected as real LangGraph messages below)
       const leanContext = buildLeanContext({

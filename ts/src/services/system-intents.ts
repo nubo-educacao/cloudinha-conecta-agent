@@ -2,22 +2,93 @@ import pRetry from "p-retry";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ChatRequest } from "../types/request.js";
 
-export interface PipelineIntent {
+// Renamed from PipelineIntent → SystemIntentAction to align with ReAct arch (ADR-0013)
+export interface SystemIntentAction {
   trigger_message: string;
   open_drawer: boolean;
   delay_ms: number;
 }
 
-const LIGHTWEIGHT_COMMANDS = new Set(["get_starters", "clear_session", "ping"]);
+/** @deprecated Use SystemIntentAction instead */
+export type PipelineIntent = SystemIntentAction;
 
 export function isSystemIntent(request: ChatRequest): boolean {
   return request.intent_type === "system_intent";
 }
 
+/**
+ * Generic DB-driven intent resolver.
+ * Queries `system_intents` for the given command, matches trigger_route against
+ * the current page, and substitutes all {{placeholder}} tokens from ui_context.
+ * Falls back to `fallback()` if no DB row matches; returns system_ack if neither.
+ */
+async function resolveIntentFromDB(
+  supabase: SupabaseClient,
+  command: string,
+  request: ChatRequest,
+  fallback?: () => SystemIntentAction
+): Promise<SystemIntentAction | Record<string, unknown>> {
+  return pRetry(
+    async () => {
+      const { data: intents, error } = await supabase
+        .from("system_intents")
+        .select("trigger_route, trigger_message, open_drawer, delay_ms")
+        .eq("command", command)
+        .eq("is_active", true);
+
+      if (error) throw error;
+
+      if (!intents || intents.length === 0) {
+        return fallback?.() ?? { type: "system_ack", message: `No ${command} intent configured.` };
+      }
+
+      const currentPage = request.ui_context?.current_page ?? "";
+      const matched = intents.find((intent: { trigger_route: string | null }) => {
+        if (!intent.trigger_route) return true; // null = match all pages
+        try {
+          return new RegExp(intent.trigger_route, "i").test(currentPage);
+        } catch {
+          return intent.trigger_route === currentPage;
+        }
+      });
+
+      if (!matched) {
+        return fallback?.() ?? { type: "system_ack", message: `No ${command} intent matched for page: ${currentPage}` };
+      }
+
+      // Substitute all {{key}} placeholders from page_data, form_state, and focused_field
+      let triggerMessage = matched.trigger_message as string;
+      const pageData = request.ui_context?.page_data ?? {};
+      const formState = request.ui_context?.form_state ?? {};
+      const allPlaceholders: Record<string, unknown> = {
+        ...pageData,
+        ...formState,
+        focused_field: request.ui_context?.focused_field,
+      };
+
+      for (const [key, value] of Object.entries(allPlaceholders)) {
+        if (value != null) {
+          triggerMessage = triggerMessage.replace(
+            new RegExp(`\\{\\{${key}\\}\\}`, "g"),
+            String(value)
+          );
+        }
+      }
+
+      return {
+        trigger_message: triggerMessage,
+        open_drawer: matched.open_drawer ?? false,
+        delay_ms: matched.delay_ms ?? 0,
+      } as SystemIntentAction;
+    },
+    { retries: 3, factor: 2, minTimeout: 1000, maxTimeout: 4000 }
+  );
+}
+
 export async function handleSystemIntent(
   request: ChatRequest,
   supabase: SupabaseClient
-): Promise<Record<string, unknown> | PipelineIntent> {
+): Promise<Record<string, unknown> | SystemIntentAction> {
   const command = request.chatInput.trim().toLowerCase();
 
   if (command === "ping") {
@@ -33,19 +104,23 @@ export async function handleSystemIntent(
   }
 
   if (command === "page_context") {
-    return resolvePageContext(supabase, request);
+    return resolveIntentFromDB(supabase, "page_context", request);
   }
 
   if (command === "step_change") {
-    return buildStepChangeIntent(request);
+    return resolveIntentFromDB(supabase, "step_change", request, () =>
+      buildStepChangeFallback(request)
+    );
   }
 
   if (command === "validation_error") {
-    return buildValidationErrorIntent(request);
+    return resolveIntentFromDB(supabase, "validation_error", request, () =>
+      buildValidationErrorFallback(request)
+    );
   }
 
   if (command === "welcome_back") {
-    return buildWelcomeBackIntent();
+    return resolveIntentFromDB(supabase, "welcome_back", request, buildWelcomeBackFallback);
   }
 
   return { type: "system_ack", message: `Unknown intent: ${command}` };
@@ -59,115 +134,33 @@ async function fetchStarters(
     async () => {
       const query = supabase
         .from("cloudinha_starters")
-        .select("text, icon")
+        .select("starters, intro_message")
         .eq("is_active", true);
 
       if (currentPage) {
         query.eq("page_route", currentPage);
+      } else {
+        query.eq("page_route", "/"); // Fallback global
       }
 
-      const { data, error } = await query.order("sort_order");
+      // Ordenar por route_priority (maior prioridade vence)
+      const { data, error } = await query.order("route_priority", { ascending: false }).limit(1);
       if (error) throw error;
-      return { type: "starters", items: data ?? [] };
+      
+      const row = data?.[0];
+      return { 
+        type: "starters", 
+        intro_message: row?.intro_message ?? "Como posso te ajudar hoje?",
+        items: row?.starters ?? [] 
+      };
     },
     { retries: 3, factor: 2, minTimeout: 1000, maxTimeout: 4000 }
   );
 }
 
-async function resolvePageContext(
-  supabase: SupabaseClient,
-  request: ChatRequest
-): Promise<PipelineIntent | Record<string, unknown>> {
-  return pRetry(
-    async () => {
-      const { data: intents, error } = await supabase
-        .from("system_intents")
-        .select("trigger_route, trigger_message, open_drawer, delay_ms")
-        .eq("command", "page_context")
-        .eq("is_active", true);
+// --- Hardcoded fallbacks (used when no DB row matches) ---
 
-      if (error) throw error;
-      if (!intents || intents.length === 0) {
-        return { type: "system_ack", message: "No page_context intent configured." };
-      }
-
-      const currentPage = request.ui_context?.current_page ?? "";
-      const matched = intents.find((intent: { trigger_route: string }) => {
-        try {
-          return new RegExp(intent.trigger_route, "i").test(currentPage);
-        } catch {
-          return intent.trigger_route === currentPage;
-        }
-      });
-
-      if (!matched) {
-        return { type: "system_ack", message: "No intent matched for current page." };
-      }
-
-      let triggerMessage = matched.trigger_message as string;
-
-      // Resolve placeholders {{title}}, {{institution}}
-      const pageData = request.ui_context?.page_data ?? {};
-      const title = pageData.title ?? pageData.name;
-      const institution = pageData.institution ?? pageData.partner_name;
-
-      if (title) triggerMessage = triggerMessage.replace(/\{\{title\}\}/g, String(title));
-      if (institution)
-        triggerMessage = triggerMessage.replace(/\{\{institution\}\}/g, String(institution));
-
-      // If placeholders remain, try DB resolution
-      if (triggerMessage.includes("{{") && pageData.opportunity_id) {
-        const resolved = await resolveOpportunityPlaceholders(
-          supabase,
-          triggerMessage,
-          String(pageData.opportunity_id)
-        );
-        triggerMessage = resolved;
-      }
-
-      return {
-        trigger_message: triggerMessage,
-        open_drawer: matched.open_drawer ?? false,
-        delay_ms: matched.delay_ms ?? 0,
-      } as PipelineIntent;
-    },
-    { retries: 3, factor: 2, minTimeout: 1000, maxTimeout: 4000 }
-  );
-}
-
-async function resolveOpportunityPlaceholders(
-  supabase: SupabaseClient,
-  message: string,
-  opportunityId: string
-): Promise<string> {
-  const { data } = await supabase
-    .from("v_unified_opportunities")
-    .select("title, institution")
-    .eq("id", opportunityId)
-    .limit(1);
-
-  if (!data || data.length === 0) {
-    // Fallback to partner_opportunities
-    const { data: partnerData } = await supabase
-      .from("partner_opportunities")
-      .select("title, partner_name")
-      .eq("id", opportunityId)
-      .limit(1);
-
-    if (partnerData?.[0]) {
-      return message
-        .replace(/\{\{title\}\}/g, partnerData[0].title ?? "")
-        .replace(/\{\{institution\}\}/g, partnerData[0].partner_name ?? "");
-    }
-    return message;
-  }
-
-  return message
-    .replace(/\{\{title\}\}/g, data[0].title ?? "")
-    .replace(/\{\{institution\}\}/g, data[0].institution ?? "");
-}
-
-function buildStepChangeIntent(request: ChatRequest): PipelineIntent {
+function buildStepChangeFallback(request: ChatRequest): SystemIntentAction {
   const formState = request.ui_context?.form_state ?? {};
   const currentStep = formState.current_step ?? "desconhecido";
   const stepName = formState.step_name ?? "";
@@ -179,7 +172,7 @@ function buildStepChangeIntent(request: ChatRequest): PipelineIntent {
   };
 }
 
-function buildValidationErrorIntent(request: ChatRequest): PipelineIntent {
+function buildValidationErrorFallback(request: ChatRequest): SystemIntentAction {
   const formState = request.ui_context?.form_state ?? {};
   const focusedField = request.ui_context?.focused_field ?? "";
   const errorMessage = formState.error_message ?? formState.validation_error ?? "erro de validação";
@@ -191,7 +184,7 @@ function buildValidationErrorIntent(request: ChatRequest): PipelineIntent {
   };
 }
 
-function buildWelcomeBackIntent(): PipelineIntent {
+function buildWelcomeBackFallback(): SystemIntentAction {
   return {
     trigger_message:
       "O usuário acabou de entrar na plataforma. Dê uma saudação calorosa e proativa mencionando eventos importantes do calendário educacional de hoje.",

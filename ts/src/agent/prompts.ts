@@ -100,6 +100,49 @@ export async function getSchemaContext(supabase: SupabaseClient): Promise<string
   return ddl;
 }
 
+const FEW_SHOT_TOKEN_CAP = 2000; // ~8-10 examples
+
+export async function getFewShotExamples(supabase: SupabaseClient): Promise<string> {
+  const { data, error } = await supabase
+    .from("few_shot_examples")
+    .select("user_message, expected_tools, expected_response")
+    .eq("is_active", true)
+    .order("sort_order", { ascending: true });
+
+  if (error || !data || data.length === 0) return "";
+
+  const blocks: string[] = [];
+  let approxTokens = 0;
+
+  for (let i = 0; i < data.length; i++) {
+    const ex = data[i] as {
+      user_message: string;
+      expected_tools: string[] | null;
+      expected_response: string;
+    };
+
+    const tools =
+      Array.isArray(ex.expected_tools) && ex.expected_tools.length > 0
+        ? ex.expected_tools.join(", ")
+        : "(nenhuma)";
+
+    const block = `### Exemplo ${i + 1}
+**Usuário:** "${ex.user_message}"
+**Ferramentas:** ${tools}
+**Resposta esperada:** "${ex.expected_response}"`;
+
+    // ~4 chars per token approximation
+    approxTokens += Math.ceil(block.length / 4);
+    if (approxTokens > FEW_SHOT_TOKEN_CAP) break;
+
+    blocks.push(block);
+  }
+
+  if (blocks.length === 0) return "";
+
+  return `## Exemplos de Interação\n\n${blocks.join("\n\n")}`;
+}
+
 export async function getAgentPrompt(supabase: SupabaseClient): Promise<AgentPromptRow | null> {
   const { data, error } = await supabase
     .from("agent_prompts")
@@ -112,13 +155,34 @@ export async function getAgentPrompt(supabase: SupabaseClient): Promise<AgentPro
   return data[0] as AgentPromptRow;
 }
 
-export function buildSystemPrompt(schemaContext: string, promptRow: AgentPromptRow): string {
+export function buildSystemPrompt(
+  schemaContext: string,
+  promptRow: AgentPromptRow,
+  fewShotBlock = ""
+): string {
+  const now = new Date().toLocaleString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    dateStyle: 'full',
+    timeStyle: 'short',
+  });
+
+  const smartLinksInstruction = `
+## Links de Navegação
+Quando você mencionar uma oportunidade ou instituição específica que encontrou via query, inclua um link markdown para que o usuário possa navegar diretamente:
+- Oportunidades: [Nome do Curso - Instituição](/oportunidades/{unified_id})
+- Instituições: [Nome da Instituição](/instituicoes/{institution_id})
+
+Inclua links apenas quando tiver o ID real retornado pela ferramenta. Nunca invente IDs.`;
+
   return promptRow.system_instruction
     .replace("{{SCHEMA_CONTEXT}}", schemaContext)
     .replace(
       "{{AVAILABLE_TOOLS}}",
       "query_educational_catalog, get_student_context, download_knowledge_document"
-    );
+    )
+    .replace(/\{\{CURRENT_DATETIME\}\}/g, now)
+    .replace("{{FEW_SHOT_EXAMPLES}}", fewShotBlock)
+    + smartLinksInstruction;
 }
 
 export function buildLeanContext(params: LeanContextParams): string {
