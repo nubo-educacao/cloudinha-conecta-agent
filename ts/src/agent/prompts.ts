@@ -102,34 +102,56 @@ export async function getSchemaContext(supabase: SupabaseClient): Promise<string
 
 const FEW_SHOT_TOKEN_CAP = 2000; // ~8-10 examples
 
-export async function getFewShotExamples(supabase: SupabaseClient): Promise<string> {
-  const { data, error } = await supabase
-    .from("few_shot_examples")
-    .select("user_message, expected_tools, expected_response")
+function mapPageToCategory(page?: string): string {
+  if (!page) return "geral";
+  if (page.includes("prouni")) return "prouni";
+  if (page.includes("sisu")) return "sisu";
+  if (page.includes("instituicoes")) return "parceiro";
+  if (page.includes("candidatura") || page.includes("vaga")) return "candidatura";
+  if (page.includes("perfil")) return "perfil";
+  if (page.includes("match")) return "match";
+  return "geral";
+}
+
+export async function getFewShotExamples(supabase: SupabaseClient, currentPage?: string): Promise<string> {
+  const targetCategory = mapPageToCategory(currentPage);
+  
+  let query = supabase
+    .from("learning_examples")
+    .select("input_query, ideal_output, intent_category")
     .eq("is_active", true)
-    .order("sort_order", { ascending: true });
+    .order("created_at", { ascending: true });
+    
+  if (targetCategory !== "geral") {
+    query = query.in("intent_category", ["geral", targetCategory]);
+  } else {
+    query = query.eq("intent_category", "geral");
+  }
+
+  const { data, error } = await query;
 
   if (error || !data || data.length === 0) return "";
+
+  // Prioritize specific examples over general ones by sorting locally
+  const sortedData = [...data].sort((a, b) => {
+    if (a.intent_category === targetCategory && b.intent_category !== targetCategory) return -1;
+    if (a.intent_category !== targetCategory && b.intent_category === targetCategory) return 1;
+    return 0;
+  });
 
   const blocks: string[] = [];
   let approxTokens = 0;
 
-  for (let i = 0; i < data.length; i++) {
-    const ex = data[i] as {
-      user_message: string;
-      expected_tools: string[] | null;
-      expected_response: string;
+  for (let i = 0; i < sortedData.length; i++) {
+    const ex = sortedData[i] as {
+      input_query: string;
+      ideal_output: string;
+      intent_category: string;
     };
 
-    const tools =
-      Array.isArray(ex.expected_tools) && ex.expected_tools.length > 0
-        ? ex.expected_tools.join(", ")
-        : "(nenhuma)";
-
     const block = `### Exemplo ${i + 1}
-**Usuário:** "${ex.user_message}"
-**Ferramentas:** ${tools}
-**Resposta esperada:** "${ex.expected_response}"`;
+**Usuário:** "${ex.input_query}"
+**Resposta esperada:** "${ex.ideal_output}"`;
 
     // ~4 chars per token approximation
     approxTokens += Math.ceil(block.length / 4);
@@ -174,15 +196,22 @@ Quando você mencionar uma oportunidade ou instituição específica que encontr
 
 Inclua links apenas quando tiver o ID real retornado pela ferramenta. Nunca invente IDs.`;
 
-  return promptRow.system_instruction
+  let prompt = promptRow.system_instruction
     .replace("{{SCHEMA_CONTEXT}}", schemaContext)
     .replace(
       "{{AVAILABLE_TOOLS}}",
       "query_educational_catalog, get_student_context, download_knowledge_document"
     )
     .replace(/\{\{CURRENT_DATETIME\}\}/g, now)
-    .replace("{{FEW_SHOT_EXAMPLES}}", fewShotBlock)
-    + smartLinksInstruction;
+    .replace("{{FEW_SHOT_EXAMPLES}}", fewShotBlock);
+
+  // If the placeholder wasn't in the stored prompt, append a datetime context block.
+  // This makes the injection resilient to missing placeholders in the admin UI.
+  if (!promptRow.system_instruction.includes("{{CURRENT_DATETIME}}")) {
+    prompt += `\n\n## Contexto Atual\nData e hora atuais: ${now}`;
+  }
+
+  return prompt + smartLinksInstruction;
 }
 
 export function buildLeanContext(params: LeanContextParams): string {

@@ -47,11 +47,14 @@ export class SessionService {
   }
 
   async getRecentMessages(limit = 5): Promise<ChatMessage[]> {
+    // Fetch the N most recent messages (descending), excluding system messages,
+    // then reverse to chronological order for the model.
     const { data, error } = await this.supabase
       .from("chat_messages")
       .select("sender, content")
       .eq("session_id", this.sessionId)
-      .order("created_at", { ascending: true }) // ascending=true — port from Python desc=False
+      .neq("sender", "system")
+      .order("created_at", { ascending: false })
       .limit(limit);
 
     if (error) {
@@ -59,6 +62,6 @@ export class SessionService {
       return [];
     }
 
-    return (data ?? []) as ChatMessage[];
+    return ((data ?? []) as ChatMessage[]).reverse();
   }
 }
