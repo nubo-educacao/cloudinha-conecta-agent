@@ -15,12 +15,22 @@ function makeRequest(overrides: Partial<ChatRequest>): ChatRequest {
 }
 
 function makeSupabase(overrides: Partial<SupabaseClient> = {}): SupabaseClient {
+  const queryMock = {
+    select: vi.fn().mockReturnThis(),
+    eq: vi.fn().mockReturnThis(),
+    order: vi.fn().mockReturnThis(),
+    limit: vi.fn().mockReturnThis(),
+    then: vi.fn().mockImplementation((cb: (v: unknown) => unknown) =>
+      Promise.resolve(cb({ data: [], error: null }))
+    ),
+  };
+  queryMock.select.mockReturnValue(queryMock);
+  queryMock.eq.mockReturnValue(queryMock);
+  queryMock.order.mockReturnValue(queryMock);
+  queryMock.limit.mockReturnValue(queryMock);
+
   return {
-    from: vi.fn().mockReturnValue({
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      order: vi.fn().mockResolvedValue({ data: [], error: null }),
-    }),
+    from: vi.fn().mockReturnValue(queryMock),
     ...overrides,
   } as unknown as SupabaseClient;
 }
@@ -55,12 +65,23 @@ describe("handleSystemIntent", () => {
 
   it("get_starters → returns starters list", async () => {
     const mockStarters = [{ text: "Quero bolsa ProUni", icon: "🎓" }];
+    const mockRow = { starters: mockStarters, intro_message: "Como posso te ajudar hoje?" };
+    const queryMock = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      then: vi.fn().mockImplementation((cb: (v: unknown) => unknown) =>
+        Promise.resolve(cb({ data: [mockRow], error: null }))
+      ),
+    };
+    queryMock.select.mockReturnValue(queryMock);
+    queryMock.eq.mockReturnValue(queryMock);
+    queryMock.order.mockReturnValue(queryMock);
+    queryMock.limit.mockReturnValue(queryMock);
+
     const supabase = {
-      from: vi.fn().mockReturnValue({
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        order: vi.fn().mockResolvedValue({ data: mockStarters, error: null }),
-      }),
+      from: vi.fn().mockReturnValue(queryMock),
     } as unknown as SupabaseClient;
 
     const result = await handleSystemIntent(
@@ -125,6 +146,31 @@ describe("handleSystemIntent", () => {
   });
 
   it("validation_error → PipelineIntent with open_drawer=true", async () => {
+    const intentRow = {
+      trigger_route: null,
+      trigger_message: "O usuário encontrou um erro de validação no campo \"{{focused_field}}\": {{error_message}}.",
+      open_drawer: true,
+      delay_ms: 0,
+    };
+    
+    const queryMock = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      then: vi.fn().mockImplementation((cb: (v: unknown) => unknown) =>
+        Promise.resolve(cb({ data: [intentRow], error: null }))
+      ),
+    };
+    queryMock.select.mockReturnValue(queryMock);
+    queryMock.eq.mockReturnValue(queryMock);
+    queryMock.order.mockReturnValue(queryMock);
+    queryMock.limit.mockReturnValue(queryMock);
+
+    const supabase = {
+      from: vi.fn().mockReturnValue(queryMock),
+    } as unknown as SupabaseClient;
+
     const result = await handleSystemIntent(
       makeRequest({
         chatInput: "validation_error",
@@ -134,7 +180,7 @@ describe("handleSystemIntent", () => {
           form_state: { error_message: "CPF inválido" },
         },
       }),
-      makeSupabase()
+      supabase
     );
 
     expect(result).toMatchObject({

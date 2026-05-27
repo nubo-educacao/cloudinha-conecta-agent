@@ -108,19 +108,31 @@ export async function handleSystemIntent(
   }
 
   if (command === "step_change") {
-    return resolveIntentFromDB(supabase, "step_change", request, () =>
-      buildStepChangeFallback(request)
-    );
+    return resolveIntentFromDB(supabase, "step_change", request);
   }
 
   if (command === "validation_error") {
-    return resolveIntentFromDB(supabase, "validation_error", request, () =>
-      buildValidationErrorFallback(request)
-    );
+    return resolveIntentFromDB(supabase, "validation_error", request);
   }
 
   if (command === "welcome_back") {
-    return resolveIntentFromDB(supabase, "welcome_back", request, buildWelcomeBackFallback);
+    return resolveIntentFromDB(supabase, "welcome_back", request);
+  }
+
+  if (command === "submit") {
+    return resolveIntentFromDB(supabase, "submit", request);
+  }
+
+  if (command === "tutorial") {
+    const intent = await resolveIntentFromDB(supabase, "tutorial", request);
+    if ("trigger_message" in intent) {
+      return {
+        message: intent.trigger_message,
+        open_drawer: intent.open_drawer,
+        delay_ms: intent.delay_ms,
+      };
+    }
+    return intent;
   }
 
   return { type: "system_ack", message: `Unknown intent: ${command}` };
@@ -156,39 +168,4 @@ async function fetchStarters(
     },
     { retries: 3, factor: 2, minTimeout: 1000, maxTimeout: 4000 }
   );
-}
-
-// --- Hardcoded fallbacks (used when no DB row matches) ---
-
-function buildStepChangeFallback(request: ChatRequest): SystemIntentAction {
-  const formState = request.ui_context?.form_state ?? {};
-  const currentStep = formState.current_step ?? "desconhecido";
-  const stepName = formState.step_name ?? "";
-
-  return {
-    trigger_message: `O usuário avançou para o passo ${currentStep}${stepName ? ` (${stepName})` : ""} do formulário. Contexto do formulário: ${JSON.stringify(formState)}`,
-    open_drawer: false,
-    delay_ms: 500,
-  };
-}
-
-function buildValidationErrorFallback(request: ChatRequest): SystemIntentAction {
-  const formState = request.ui_context?.form_state ?? {};
-  const focusedField = request.ui_context?.focused_field ?? "";
-  const errorMessage = formState.error_message ?? formState.validation_error ?? "erro de validação";
-
-  return {
-    trigger_message: `O usuário encontrou um erro de validação no campo "${focusedField}": ${errorMessage}. Ajude-o a corrigir.`,
-    open_drawer: true,
-    delay_ms: 0,
-  };
-}
-
-function buildWelcomeBackFallback(): SystemIntentAction {
-  return {
-    trigger_message:
-      "O usuário acabou de entrar na plataforma. Dê uma saudação calorosa e proativa mencionando eventos importantes do calendário educacional de hoje.",
-    open_drawer: false,
-    delay_ms: 1500,
-  };
 }

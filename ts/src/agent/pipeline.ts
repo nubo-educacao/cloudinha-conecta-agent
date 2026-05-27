@@ -30,22 +30,44 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Parse the structured <!--SUGESTÕES--> block that the agent is instructed to append.
-// Returns { suggestions, cleanText } — cleanText has the block stripped out.
 function parseSuggestions(text: string): { suggestions: string[]; cleanText: string } {
-  const blockMatch = text.match(/<!--SUGESTÕES-->([\s\S]*?)<!--\/SUGESTÕES-->/);
+  // 1. Try explicit comment blocks
+  let blockMatch = text.match(/<!--\s*SUGEST[OÕ]ES\s*-->([\s\S]*?)<!--\s*\/SUGEST[OÕ]ES\s*-->/i);
+  
+  // 2. Fallback: missing closing tag
+  if (!blockMatch) {
+    blockMatch = text.match(/<!--\s*SUGEST[OÕ]ES\s*-->([\s\S]*)$/i);
+  }
+  
+  // 3. Fallback: used markdown header instead of HTML comment
+  if (!blockMatch) {
+    blockMatch = text.match(/(?:\*\*Sugest[oõ]es:?\*\*|###?\s*Sugest[oõ]es:?)([\s\S]*)$/i);
+  }
+
   if (!blockMatch) return { suggestions: [], cleanText: text };
 
   const block = blockMatch[1];
-  const suggestions = (block.match(/^[-•]\s+(.+)$/gm) ?? [])
-    .map((s) => s.replace(/^[-•]\s+/, "").trim())
+  const suggestions = (block.match(/^[-•*]\s+(.+)$/gm) ?? [])
+    .map((s) => {
+      let clean = s.replace(/^[-•*]\s+/, "").trim();
+      // Remove markdown links like [text](url) or [text]
+      clean = clean.replace(/\[([^\]]+)\](?:\([^)]*\))?/g, "$1").trim();
+      return clean;
+    })
     .filter((s) => s.length > 0)
     .slice(0, 3);
 
-  // Remove the entire block (plus any trailing whitespace/newlines) from the text
-  const cleanText = text.replace(/\s*<!--SUGESTÕES-->[\s\S]*?<!--\/SUGESTÕES-->\s*$/, "").trimEnd();
+  let cleanText = text;
+  if (suggestions.length > 0) {
+    // Try to remove explicit block
+    cleanText = text.replace(/\s*<!--\s*SUGEST[OÕ]ES\s*-->[\s\S]*?<!--\s*\/SUGEST[OÕ]ES\s*-->\s*$/i, "");
+    if (cleanText === text) {
+      // Try to remove open-ended block or header
+      cleanText = text.replace(/\s*(?:<!--\s*SUGEST[OÕ]ES\s*-->|\*\*Sugest[oõ]es:?\*\*|###?\s*Sugest[oõ]es:?)[\s\S]*$/i, "");
+    }
+  }
 
-  return { suggestions, cleanText };
+  return { suggestions, cleanText: cleanText.trimEnd() };
 }
 
 async function loadProfile(
@@ -119,7 +141,7 @@ export async function* runPipeline(request: ChatRequest): AsyncGenerator<ChatEve
       // 4. Build schema context + few-shot examples + system prompt
       const [schemaContext, fewShotBlock] = await Promise.all([
         getSchemaContext(supabaseAnon),
-        getFewShotExamples(supabaseAnon),
+        getFewShotExamples(supabaseAnon, request.ui_context?.current_page),
       ]);
       const systemPrompt = buildSystemPrompt(schemaContext, promptRow, fewShotBlock);
 
@@ -134,8 +156,12 @@ export async function* runPipeline(request: ChatRequest): AsyncGenerator<ChatEve
         ui_context: request.ui_context,
       });
 
-      // 6. Persist user message
-      await session.persistUserMessage(request.chatInput);
+      // 6. Persist user message (skip system intents — they are NOT user messages)
+      if (request.intent_type === "system_intent") {
+        await session.persistSystemMessage(request.chatInput);
+      } else {
+        await session.persistUserMessage(request.chatInput);
+      }
 
       // 7. Create agent
       const tools = createTools(supabaseService);

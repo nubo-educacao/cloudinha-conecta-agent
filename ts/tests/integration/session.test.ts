@@ -36,15 +36,16 @@ describe("SessionService", () => {
 
   it("getRecentMessages returns messages in ascending order (oldest first)", async () => {
     const messages = [
-      { sender: "user", content: "Olá" },
-      { sender: "cloudinha", content: "Oi!" },
       { sender: "user", content: "Tenho dúvida" },
+      { sender: "cloudinha", content: "Oi!" },
+      { sender: "user", content: "Olá" },
     ];
 
     const supabase = {
       from: vi.fn().mockReturnValue({
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
+        neq: vi.fn().mockReturnThis(),
         order: vi.fn().mockReturnThis(),
         limit: vi.fn().mockResolvedValue({ data: messages, error: null }),
       }),
@@ -59,7 +60,7 @@ describe("SessionService", () => {
 
     // Verify ascending order was requested
     const orderCall = (supabase.from as ReturnType<typeof vi.fn>).mock.results[0].value.order;
-    expect(orderCall).toHaveBeenCalledWith("created_at", { ascending: true });
+    expect(orderCall).toHaveBeenCalledWith("created_at", { ascending: false });
   });
 
   it("getRecentMessages returns empty array on error", async () => {
@@ -67,6 +68,7 @@ describe("SessionService", () => {
       from: vi.fn().mockReturnValue({
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
+        neq: vi.fn().mockReturnThis(),
         order: vi.fn().mockReturnThis(),
         limit: vi.fn().mockResolvedValue({ data: null, error: { message: "DB error" } }),
       }),
