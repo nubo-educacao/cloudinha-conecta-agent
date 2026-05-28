@@ -1,18 +1,8 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+# Dependencies
+node_modules/
 
-# C extensions
-*.so
-
-# Environments
-.venv/
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+# Build output
+dist/
 
 # Environment variables
 .env
@@ -30,3 +20,8 @@ venv.bak/
 # OS
 .DS_Store
 Thumbs.db
+
+# Scratch & Sandbox
+scratch/
+test-enrich.js
+test-detail.js
