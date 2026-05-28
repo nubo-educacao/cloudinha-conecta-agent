@@ -134,8 +134,12 @@ export async function* runPipeline(request: ChatRequest): AsyncGenerator<ChatEve
         ui_context: request.ui_context,
       });
 
-      // 6. Persist user message
-      await session.persistUserMessage(request.chatInput);
+      // 6. Persist user message (system intents salvos com sender="system")
+      if (request.intent_type === "system_intent") {
+        await session.persistSystemMessage(request.chatInput);
+      } else {
+        await session.persistUserMessage(request.chatInput);
+      }
 
       // 7. Create agent
       const tools = createTools(supabaseService);
@@ -268,7 +272,12 @@ export async function* runPipeline(request: ChatRequest): AsyncGenerator<ChatEve
       }
 
       // 10. Persist agent response (without the suggestions block)
-      await session.persistAgentMessage(cleanText);
+      // System intent responses ficam com sender='system' para não aparecer no histórico do drawer
+      if (request.intent_type === "system_intent") {
+        await session.persistSystemMessage(cleanText);
+      } else {
+        await session.persistAgentMessage(cleanText);
+      }
 
       // 11. Log telemetry
       const totalLatencyMs = Date.now() - totalStart;
