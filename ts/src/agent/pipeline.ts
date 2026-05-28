@@ -134,8 +134,12 @@ export async function* runPipeline(request: ChatRequest): AsyncGenerator<ChatEve
         ui_context: request.ui_context,
       });
 
-      // 6. Persist user message
-      await session.persistUserMessage(request.chatInput);
+      // 6. Persist user message (system intents salvos com sender="system")
+      if (request.intent_type === "system_intent") {
+        await session.persistSystemMessage(request.chatInput);
+      } else {
+        await session.persistUserMessage(request.chatInput);
+      }
 
       // 7. Create agent
       const tools = createTools(supabaseService);
