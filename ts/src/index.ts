@@ -74,7 +74,16 @@ app.post("/chat", async (req: Request, res: Response) => {
           })
         );
       } else {
-        res.write(serializeEvent({ type: "system_message", content: JSON.stringify(result) }));
+        const resObj = result as Record<string, unknown>;
+        const contentText = typeof resObj.message === "string" ? resObj.message : JSON.stringify(result);
+        res.write(serializeEvent({ type: "text", content: contentText }));
+        if (resObj.open_drawer !== undefined) {
+          res.write(serializeEvent({
+            type: "intent_metadata",
+            open_drawer: resObj.open_drawer,
+            delay_ms: resObj.delay_ms ?? 0,
+          }));
+        }
       }
     } else {
       for await (const event of runPipeline(chatRequest)) {
