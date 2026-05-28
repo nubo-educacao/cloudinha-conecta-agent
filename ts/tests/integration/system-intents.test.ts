@@ -55,12 +55,19 @@ describe("handleSystemIntent", () => {
 
   it("get_starters → returns starters list", async () => {
     const mockStarters = [{ text: "Quero bolsa ProUni", icon: "🎓" }];
+    const mockRow = { starters: mockStarters, intro_message: "Como posso te ajudar hoje?" };
+    const queryMock = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue({ data: [mockRow], error: null }),
+    };
+    queryMock.select.mockReturnValue(queryMock);
+    queryMock.eq.mockReturnValue(queryMock);
+    queryMock.order.mockReturnValue(queryMock);
+
     const supabase = {
-      from: vi.fn().mockReturnValue({
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        order: vi.fn().mockResolvedValue({ data: mockStarters, error: null }),
-      }),
+      from: vi.fn().mockReturnValue(queryMock),
     } as unknown as SupabaseClient;
 
     const result = await handleSystemIntent(

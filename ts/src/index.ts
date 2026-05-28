@@ -61,7 +61,6 @@ app.post("/chat", async (req: Request, res: Response) => {
         const pipelineRequest = {
           ...chatRequest,
           chatInput: pipelineIntent.trigger_message,
-          intent_type: "user_message" as const,
         };
         for await (const event of runPipeline(pipelineRequest)) {
           res.write(serializeEvent(event));
@@ -74,7 +73,7 @@ app.post("/chat", async (req: Request, res: Response) => {
           })
         );
       } else {
-        const resObj = result as Record<string, unknown>;
+        const resObj = result as any;
         const contentText = typeof resObj.message === "string" ? resObj.message : JSON.stringify(result);
         res.write(serializeEvent({ type: "text", content: contentText }));
         if (resObj.open_drawer !== undefined) {

@@ -123,6 +123,22 @@ export async function handleSystemIntent(
     return resolveIntentFromDB(supabase, "welcome_back", request, buildWelcomeBackFallback);
   }
 
+  if (command === "submit") {
+    return resolveIntentFromDB(supabase, "submit", request);
+  }
+
+  if (command === "tutorial") {
+    const intent = await resolveIntentFromDB(supabase, "tutorial", request);
+    if ("trigger_message" in intent) {
+      return {
+        message: intent.trigger_message,
+        open_drawer: intent.open_drawer,
+        delay_ms: intent.delay_ms,
+      };
+    }
+    return intent;
+  }
+
   return { type: "system_ack", message: `Unknown intent: ${command}` };
 }
 
