@@ -272,7 +272,12 @@ export async function* runPipeline(request: ChatRequest): AsyncGenerator<ChatEve
       }
 
       // 10. Persist agent response (without the suggestions block)
-      await session.persistAgentMessage(cleanText);
+      // System intent responses ficam com sender='system' para não aparecer no histórico do drawer
+      if (request.intent_type === "system_intent") {
+        await session.persistSystemMessage(cleanText);
+      } else {
+        await session.persistAgentMessage(cleanText);
+      }
 
       // 11. Log telemetry
       const totalLatencyMs = Date.now() - totalStart;
