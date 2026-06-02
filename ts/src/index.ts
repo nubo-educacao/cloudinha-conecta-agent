@@ -74,14 +74,18 @@ app.post("/chat", async (req: Request, res: Response) => {
         );
       } else {
         const resObj = result as any;
-        const contentText = typeof resObj.message === "string" ? resObj.message : JSON.stringify(result);
-        res.write(serializeEvent({ type: "text", content: contentText }));
-        if (resObj.open_drawer !== undefined) {
-          res.write(serializeEvent({
-            type: "intent_metadata",
-            open_drawer: resObj.open_drawer,
-            delay_ms: resObj.delay_ms ?? 0,
-          }));
+        // system_ack = intent reconhecido mas sem resposta visual para o usuário.
+        // Não emite nenhum evento de text para não vazar mensagens internas no chat.
+        if (resObj.type !== "system_ack") {
+          const contentText = typeof resObj.message === "string" ? resObj.message : JSON.stringify(result);
+          res.write(serializeEvent({ type: "text", content: contentText }));
+          if (resObj.open_drawer !== undefined) {
+            res.write(serializeEvent({
+              type: "intent_metadata",
+              open_drawer: resObj.open_drawer,
+              delay_ms: resObj.delay_ms ?? 0,
+            }));
+          }
         }
       }
     } else {
