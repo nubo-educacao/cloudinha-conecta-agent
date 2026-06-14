@@ -103,11 +103,15 @@ export async function getSchemaContext(supabase: SupabaseClient): Promise<string
 const FEW_SHOT_TOKEN_CAP = 2000; // ~8-10 examples
 
 export async function getFewShotExamples(supabase: SupabaseClient): Promise<string> {
+  // Fonte: tabela `learning_examples` (colunas reais: input_query, ideal_output,
+  // intent_category, is_active, created_at). O ideal_output já contém a demonstração
+  // de tool call (ex.: <call tool="get_student_context">), então o exemplo ensina o
+  // uso da ferramenta por demonstração — não há coluna de "tools" separada.
   const { data, error } = await supabase
-    .from("few_shot_examples")
-    .select("user_message, expected_tools, expected_response")
+    .from("learning_examples")
+    .select("input_query, ideal_output, intent_category")
     .eq("is_active", true)
-    .order("sort_order", { ascending: true });
+    .order("created_at", { ascending: true });
 
   if (error || !data || data.length === 0) return "";
 
@@ -116,20 +120,18 @@ export async function getFewShotExamples(supabase: SupabaseClient): Promise<stri
 
   for (let i = 0; i < data.length; i++) {
     const ex = data[i] as {
-      user_message: string;
-      expected_tools: string[] | null;
-      expected_response: string;
+      input_query: string;
+      ideal_output: string;
+      intent_category: string | null;
     };
 
-    const tools =
-      Array.isArray(ex.expected_tools) && ex.expected_tools.length > 0
-        ? ex.expected_tools.join(", ")
-        : "(nenhuma)";
+    const header = ex.intent_category
+      ? `### Exemplo ${i + 1} (${ex.intent_category})`
+      : `### Exemplo ${i + 1}`;
 
-    const block = `### Exemplo ${i + 1}
-**Usuário:** "${ex.user_message}"
-**Ferramentas:** ${tools}
-**Resposta esperada:** "${ex.expected_response}"`;
+    const block = `${header}
+**Usuário:** "${ex.input_query}"
+**Resposta esperada:** "${ex.ideal_output}"`;
 
     // ~4 chars per token approximation
     approxTokens += Math.ceil(block.length / 4);
