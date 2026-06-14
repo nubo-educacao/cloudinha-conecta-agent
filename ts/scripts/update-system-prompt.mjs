@@ -110,9 +110,48 @@ Regras para as sugestões:
 - Nunca invente dados, vagas, notas de corte ou prazos
 `;
 
+// ⚠️ GOVERNANÇA — LEIA ANTES DE USAR
+// A FONTE DA VERDADE do prompt da Cloudinha é o BACKOFFICE (nubo-conecta-admin →
+// "Configuração e Prompts dos Agentes"), que escreve em agent_prompts.cloudinha_react.
+// Este script NÃO deve mais sobrescrever o prompt — fazer isso apaga as edições do
+// backoffice (foi o que causou drift no passado). Ele virou um SEED idempotente:
+// só grava se NÃO existir um prompt ativo (cold start de um ambiente novo), e mesmo
+// assim exige a flag explícita --seed.
 async function main() {
-  console.log("🔄 Updating agent_prompts for cloudinha_react...");
+  const force = process.argv.includes("--seed");
 
+  const { data: existing, error: readErr } = await supabase
+    .from("agent_prompts")
+    .select("agent_key, system_instruction")
+    .eq("agent_key", "cloudinha_react")
+    .eq("is_active", true)
+    .limit(1);
+
+  if (readErr) {
+    console.error("❌ Read failed:", readErr.message);
+    process.exit(1);
+  }
+
+  const hasPrompt = existing && existing.length > 0 && (existing[0].system_instruction || "").trim().length > 0;
+
+  if (hasPrompt) {
+    console.error(
+      "⛔ Já existe um prompt ativo para cloudinha_react.\n" +
+      "   A edição canônica é pelo BACKOFFICE (nubo-conecta-admin). Este script NÃO sobrescreve.\n" +
+      "   Se você precisa mesmo mudar o prompt, faça pelo backoffice (gera versão em agent_prompt_versions)."
+    );
+    process.exit(1);
+  }
+
+  if (!force) {
+    console.error(
+      "ℹ️ Nenhum prompt ativo encontrado (cold start). Para semear o valor inicial, rode com --seed.\n" +
+      "   Lembre: depois disso, toda alteração é pelo backoffice."
+    );
+    process.exit(1);
+  }
+
+  console.log("🌱 Seeding initial cloudinha_react prompt (cold start)...");
   const { data, error } = await supabase
     .from("agent_prompts")
     .update({ system_instruction: NEW_PROMPT })
@@ -120,17 +159,9 @@ async function main() {
     .eq("is_active", true)
     .select("agent_key, is_active");
 
-  if (error) {
-    console.error("❌ Update failed:", error.message);
-    process.exit(1);
-  }
-
-  if (!data || data.length === 0) {
-    console.error("❌ No rows updated — check agent_key and is_active filter.");
-    process.exit(1);
-  }
-
-  console.log(`✅ Updated ${data.length} row(s):`, data);
+  if (error) { console.error("❌ Seed failed:", error.message); process.exit(1); }
+  if (!data || data.length === 0) { console.error("❌ No rows updated — check agent_key/is_active."); process.exit(1); }
+  console.log(`✅ Seeded ${data.length} row(s):`, data);
 }
 
 main();
