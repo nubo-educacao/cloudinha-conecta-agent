@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { getFewShotExamples } from "../../../src/agent/prompts.js";
+import { getLearningExamples } from "../../../src/agent/prompts.js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 // Mocka o query builder: .from().select().eq().order() -> Promise<{data, error}>
@@ -11,7 +11,7 @@ function makeSupabase(result: { data: unknown; error: unknown }) {
   return { client: { from } as unknown as SupabaseClient, from, select, eq, order };
 }
 
-describe("getFewShotExamples", () => {
+describe("getLearningExamples", () => {
   it("lê de learning_examples e monta o bloco a partir de input_query/ideal_output", async () => {
     const m = makeSupabase({
       data: [
@@ -24,7 +24,7 @@ describe("getFewShotExamples", () => {
       error: null,
     });
 
-    const out = await getFewShotExamples(m.client);
+    const out = await getLearningExamples(m.client);
 
     expect(m.from).toHaveBeenCalledWith("learning_examples");
     expect(out).toContain("## Exemplos de Interação");
@@ -34,15 +34,15 @@ describe("getFewShotExamples", () => {
 
   it("NÃO consulta a tabela inexistente few_shot_examples", async () => {
     const m = makeSupabase({ data: [], error: null });
-    await getFewShotExamples(m.client);
+    await getLearningExamples(m.client);
     expect(m.from).not.toHaveBeenCalledWith("few_shot_examples");
   });
 
   it("retorna string vazia em erro ou sem dados", async () => {
     const err = makeSupabase({ data: null, error: { message: "boom" } });
-    expect(await getFewShotExamples(err.client)).toBe("");
+    expect(await getLearningExamples(err.client)).toBe("");
 
     const empty = makeSupabase({ data: [], error: null });
-    expect(await getFewShotExamples(empty.client)).toBe("");
+    expect(await getLearningExamples(empty.client)).toBe("");
   });
 });

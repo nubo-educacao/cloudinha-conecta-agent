@@ -60,6 +60,7 @@ export async function getSchemaContext(supabase: SupabaseClient): Promise<string
     WHERE c.relname IN (${tableList})
       AND a.attnum > 0
       AND NOT a.attisdropped
+      AND a.attname != 'external_redirect_config'
     ORDER BY c.relname, a.attnum
   `;
 
@@ -102,7 +103,7 @@ export async function getSchemaContext(supabase: SupabaseClient): Promise<string
 
 const FEW_SHOT_TOKEN_CAP = 2000; // ~8-10 examples
 
-export async function getFewShotExamples(supabase: SupabaseClient): Promise<string> {
+export async function getLearningExamples(supabase: SupabaseClient): Promise<string> {
   // Fonte: tabela `learning_examples` (colunas reais: input_query, ideal_output,
   // intent_category, is_active, created_at). O ideal_output já contém a demonstração
   // de tool call (ex.: <call tool="get_student_context">), então o exemplo ensina o
@@ -160,7 +161,7 @@ export async function getAgentPrompt(supabase: SupabaseClient): Promise<AgentPro
 export function buildSystemPrompt(
   schemaContext: string,
   promptRow: AgentPromptRow,
-  fewShotBlock = ""
+  learningExamplesBlock = ""
 ): string {
   const now = new Date().toLocaleString('pt-BR', {
     timeZone: 'America/Sao_Paulo',
@@ -183,7 +184,7 @@ Inclua links apenas quando tiver o ID real retornado pela ferramenta. Nunca inve
       "query_educational_catalog, get_student_context, download_knowledge_document"
     )
     .replace(/\{\{CURRENT_DATETIME\}\}/g, now)
-    .replace("{{FEW_SHOT_EXAMPLES}}", fewShotBlock)
+    .replace("{{LEARNING_EXAMPLES}}", learningExamplesBlock)
     + smartLinksInstruction;
 }
 
