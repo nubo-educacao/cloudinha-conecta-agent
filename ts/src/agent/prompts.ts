@@ -48,8 +48,8 @@ export async function getSchemaContext(supabase: SupabaseClient): Promise<string
 
   // information_schema.columns does not include materialized views.
   // Use pg_catalog to cover tables, views, AND materialized views.
-  const tableList = DDL_TABLES.map((t) => `'${t}'`).join(", ");
-  const query = `
+  const tableList = DDL_TABLES.map((t) => \`'\${t}'\`).join(", ");
+  const query = \`
     SELECT
       c.relname AS table_name,
       a.attname AS column_name,
@@ -57,11 +57,12 @@ export async function getSchemaContext(supabase: SupabaseClient): Promise<string
       CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable
     FROM pg_catalog.pg_class c
     JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
-    WHERE c.relname IN (${tableList})
+    WHERE c.relname IN (\${tableList})
       AND a.attnum > 0
       AND NOT a.attisdropped
+      AND a.attname != 'external_redirect_config'
     ORDER BY c.relname, a.attnum
-  `;
+  \`;
 
   const { data, error } = await supabase.rpc("execute_readonly_query", { query_text: query });
   if (error || !data) {
@@ -89,12 +90,12 @@ export async function getSchemaContext(supabase: SupabaseClient): Promise<string
     .map(([table, cols]) => {
       const colDefs = cols
         .map(
-          (c) => `  ${c.column_name} ${c.data_type}${c.is_nullable === "NO" ? " NOT NULL" : ""}`
+          (c) => \`  \${c.column_name} \${c.data_type}\${c.is_nullable === "NO" ? " NOT NULL" : ""}\`
         )
-        .join(",\n");
-      return `-- TABLE: ${table}\n(\n${colDefs}\n)`;
+        .join(",\\n");
+      return \`-- TABLE: \${table}\\n(\\n\${colDefs}\\n)\`;
     })
-    .join("\n\n");
+    .join("\\n\\n");
 
   _schemaCache = { ddl, expiresAt: now + 5 * 60 * 1000 };
   return ddl;
@@ -102,12 +103,16 @@ export async function getSchemaContext(supabase: SupabaseClient): Promise<string
 
 const FEW_SHOT_TOKEN_CAP = 2000; // ~8-10 examples
 
-export async function getFewShotExamples(supabase: SupabaseClient): Promise<string> {
+export async function getLearningExamples(supabase: SupabaseClient): Promise<string> {
+  // Fonte: tabela \`learning_examples\` (colunas reais: input_query, ideal_output,
+  // intent_category, is_active, created_at). O ideal_output já contém a demonstração
+  // de tool call (ex.: <call tool="get_student_context">), então o exemplo ensina o
+  // uso da ferramenta por demonstração — não há coluna de "tools" separada.
   const { data, error } = await supabase
-    .from("few_shot_examples")
-    .select("user_message, expected_tools, expected_response")
+    .from("learning_examples")
+    .select("input_query, ideal_output, intent_category")
     .eq("is_active", true)
-    .order("sort_order", { ascending: true });
+    .order("created_at", { ascending: true });
 
   if (error || !data || data.length === 0) return "";
 
@@ -116,20 +121,18 @@ export async function getFewShotExamples(supabase: SupabaseClient): Promise<stri
 
   for (let i = 0; i < data.length; i++) {
     const ex = data[i] as {
-      user_message: string;
-      expected_tools: string[] | null;
-      expected_response: string;
+      input_query: string;
+      ideal_output: string;
+      intent_category: string | null;
     };
 
-    const tools =
-      Array.isArray(ex.expected_tools) && ex.expected_tools.length > 0
-        ? ex.expected_tools.join(", ")
-        : "(nenhuma)";
+    const header = ex.intent_category
+      ? \`### Exemplo \${i + 1} (\${ex.intent_category})\`
+      : \`### Exemplo \${i + 1}\`;
 
-    const block = `### Exemplo ${i + 1}
-**Usuário:** "${ex.user_message}"
-**Ferramentas:** ${tools}
-**Resposta esperada:** "${ex.expected_response}"`;
+    const block = \`\${header}
+**Usuário:** "\${ex.input_query}"
+**Resposta esperada:** "\${ex.ideal_output}"\`;
 
     // ~4 chars per token approximation
     approxTokens += Math.ceil(block.length / 4);
@@ -140,7 +143,7 @@ export async function getFewShotExamples(supabase: SupabaseClient): Promise<stri
 
   if (blocks.length === 0) return "";
 
-  return `## Exemplos de Interação\n\n${blocks.join("\n\n")}`;
+  return \`## Exemplos de Interação\\n\\n\${blocks.join("\\n\\n")}\`;
 }
 
 export async function getAgentPrompt(supabase: SupabaseClient): Promise<AgentPromptRow | null> {
@@ -158,7 +161,7 @@ export async function getAgentPrompt(supabase: SupabaseClient): Promise<AgentPro
 export function buildSystemPrompt(
   schemaContext: string,
   promptRow: AgentPromptRow,
-  fewShotBlock = ""
+  learningExamplesBlock = ""
 ): string {
   const now = new Date().toLocaleString('pt-BR', {
     timeZone: 'America/Sao_Paulo',
@@ -166,13 +169,13 @@ export function buildSystemPrompt(
     timeStyle: 'short',
   });
 
-  const smartLinksInstruction = `
+  const smartLinksInstruction = \`
 ## Links de Navegação
 Quando você mencionar uma oportunidade ou instituição específica que encontrou via query, inclua um link markdown para que o usuário possa navegar diretamente:
 - Oportunidades: [Nome do Curso - Instituição](/oportunidades/{unified_id})
 - Instituições: [Nome da Instituição](/instituicoes/{institution_id})
 
-Inclua links apenas quando tiver o ID real retornado pela ferramenta. Nunca invente IDs.`;
+Inclua links apenas quando tiver o ID real retornado pela ferramenta. Nunca invente IDs.\`;
 
   return promptRow.system_instruction
     .replace("{{SCHEMA_CONTEXT}}", schemaContext)
@@ -180,41 +183,41 @@ Inclua links apenas quando tiver o ID real retornado pela ferramenta. Nunca inve
       "{{AVAILABLE_TOOLS}}",
       "query_educational_catalog, get_student_context, download_knowledge_document"
     )
-    .replace(/\{\{CURRENT_DATETIME\}\}/g, now)
-    .replace("{{FEW_SHOT_EXAMPLES}}", fewShotBlock)
+    .replace(/\\{\\{CURRENT_DATETIME\\}\\}/g, now)
+    .replace("{{LEARNING_EXAMPLES}}", learningExamplesBlock)
     + smartLinksInstruction;
 }
 
 export function buildLeanContext(params: LeanContextParams): string {
   const lines: string[] = [];
 
-  lines.push(`[CONTEXTO DO USUÁRIO]`);
-  lines.push(`user_id: ${params.user_id}`);
-  lines.push(`active_profile_id: ${params.active_profile_id}`);
-  lines.push(`nome: ${params.full_name}`);
-  if (params.age !== undefined) lines.push(`idade: ${params.age} anos`);
+  lines.push(\`[CONTEXTO DO USUÁRIO]\`);
+  lines.push(\`user_id: \${params.user_id}\`);
+  lines.push(\`active_profile_id: \${params.active_profile_id}\`);
+  lines.push(\`nome: \${params.full_name}\`);
+  if (params.age !== undefined) lines.push(\`idade: \${params.age} anos\`);
   if (params.cognitive_memory) {
-    lines.push(`\n[MEMÓRIA COGNITIVA]\n${params.cognitive_memory}`);
+    lines.push(\`\\n[MEMÓRIA COGNITIVA]\\n\${params.cognitive_memory}\`);
   }
 
   if (params.recent_messages.length > 0) {
-    lines.push(`\n[HISTÓRICO RECENTE]`);
+    lines.push(\`\\n[HISTÓRICO RECENTE]\`);
     for (const msg of params.recent_messages) {
       const sender = msg.sender === "cloudinha" ? "Cloudinha" : "Usuário";
-      lines.push(`${sender}: ${msg.content}`);
+      lines.push(\`\${sender}: \${msg.content}\`);
     }
   }
 
   if (params.ui_context?.current_page) {
-    lines.push(`\n[CONTEXTO DA INTERFACE]`);
-    lines.push(`página atual: ${params.ui_context.current_page}`);
+    lines.push(\`\\n[CONTEXTO DA INTERFACE]\`);
+    lines.push(\`página atual: \${params.ui_context.current_page}\`);
     if (params.ui_context.focused_field) {
-      lines.push(`campo em foco: ${params.ui_context.focused_field}`);
+      lines.push(\`campo em foco: \${params.ui_context.focused_field}\`);
     }
     if (params.ui_context.form_state) {
-      lines.push(`estado do formulário: ${JSON.stringify(params.ui_context.form_state)}`);
+      lines.push(\`estado do formulário: \${JSON.stringify(params.ui_context.form_state)}\`);
     }
   }
 
-  return lines.join("\n");
+  return lines.join("\\n");
 }
