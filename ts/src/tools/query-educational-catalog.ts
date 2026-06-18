@@ -57,7 +57,17 @@ export function createQueryEducationalCatalog(supabase: SupabaseClient): Dynamic
         return JSON.stringify({ error: `Database error: ${error.message}` });
       }
 
-      return JSON.stringify({ results: data ?? [], count: (data ?? []).length });
+      // Hard block: Strip out external_redirect_config from any result
+      // This prevents the agent from leaking the URL by completely hiding it
+      const sanitizedData = (data ?? []).map((row: any) => {
+        if (row && typeof row === 'object' && 'external_redirect_config' in row) {
+          const { external_redirect_config, ...rest } = row;
+          return rest;
+        }
+        return row;
+      });
+
+      return JSON.stringify({ results: sanitizedData, count: sanitizedData.length });
     },
   });
 }
