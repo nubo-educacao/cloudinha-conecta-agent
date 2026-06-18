@@ -41,16 +41,20 @@ export function createQueryEducationalCatalog(supabase: SupabaseClient): Dynamic
       "Do NOT use for student personal data.",
     schema,
     func: async ({ sql_query }) => {
+      // A RPC embrulha a query como `SELECT ... FROM (<sql>) t`, então um ';'
+      // final causa erro de sintaxe. Removemos ';' e espaços nas pontas.
+      const cleanedQuery = sql_query.replace(/;\s*$/g, "").trim();
+
       // Reset lastIndex for global regex
       BLOCKED_PATTERN.lastIndex = 0;
-      if (BLOCKED_PATTERN.test(sql_query)) {
+      if (BLOCKED_PATTERN.test(cleanedQuery)) {
         return JSON.stringify({
           error: "LGPD: Query references restricted tables. Use get_student_context for personal data.",
         });
       }
 
       const { data, error } = await supabase.rpc("execute_readonly_query", {
-        query_text: sql_query,
+        query_text: cleanedQuery,
       });
 
       if (error) {

@@ -47,11 +47,14 @@ export class SessionService {
   }
 
   async getRecentMessages(limit = 5): Promise<ChatMessage[]> {
+    // Buscar as MAIS RECENTES (desc) e depois reverter para ordem cronológica.
+    // Bug anterior: ascending=true + limit pegava as 5 mensagens mais ANTIGAS da
+    // sessão (saudação/page_context inicial), nunca o contexto recente da conversa.
     const { data, error } = await this.supabase
       .from("chat_messages")
       .select("sender, content")
       .eq("session_id", this.sessionId)
-      .order("created_at", { ascending: true }) // ascending=true — port from Python desc=False
+      .order("created_at", { ascending: false })
       .limit(limit);
 
     if (error) {
@@ -59,6 +62,6 @@ export class SessionService {
       return [];
     }
 
-    return (data ?? []) as ChatMessage[];
+    return (data ?? []).reverse() as ChatMessage[];
   }
 }
