@@ -25,9 +25,25 @@ const MSG_TIMEOUT =
 const MSG_MAX_STEPS =
   "Desculpe, precisei de mais passos do que o esperado. Pode simplificar sua pergunta?";
 const MSG_FINAL_FALLBACK = "Desculpe, não consegui processar.";
+// T5: Mensagem amigável para quota esgotada (Gemini 429 prepayment credits depleted)
+const MSG_QUOTA_DEPLETED =
+  "Estou temporariamente indisponível por limite de uso da IA. " +
+  "Tente novamente em alguns minutos — o serviço será restabelecido automaticamente. 🙏";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// T5: Detecta erro 429 de quota esgotada do Gemini
+function isQuotaError(err: Error): boolean {
+  const msg = err.message.toLowerCase();
+  return (
+    msg.includes("429") ||
+    msg.includes("prepayment") ||
+    msg.includes("credits depleted") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("quota")
+  );
 }
 
 // Parse the structured <!--SUGESTÕES--> block that the agent is instructed to append.
@@ -307,8 +323,10 @@ export async function* runPipeline(request: ChatRequest): AsyncGenerator<ChatEve
         lastError.message.includes("recursion_limit");
       const isTimeout =
         lastError.message.includes("timeout") || lastError.message.includes("ETIMEDOUT");
+      // T5: Detecta 429 quota/credits esgotados
+      const isQuota = isQuotaError(lastError);
 
-      // Log error
+      // Log error — inclui error_type específico para 429
       await logAgentError(supabaseService, {
         user_id: request.userId,
         session_id: request.sessionId,
@@ -316,6 +334,8 @@ export async function* runPipeline(request: ChatRequest): AsyncGenerator<ChatEve
           ? "max_steps_exceeded"
           : isTimeout
           ? "tool_timeout"
+          : isQuota
+          ? "quota_exceeded"
           : "react_loop_error",
         error_message: lastError.message,
         stack_trace: lastError.stack,
@@ -329,6 +349,12 @@ export async function* runPipeline(request: ChatRequest): AsyncGenerator<ChatEve
 
       if (isTimeout) {
         yield { type: "text", content: MSG_TIMEOUT };
+        return;
+      }
+
+      // T5: Quota esgotada — não tem sentido fazer retry imediato, retorna mensagem amigável
+      if (isQuota) {
+        yield { type: "text", content: MSG_QUOTA_DEPLETED };
         return;
       }
 

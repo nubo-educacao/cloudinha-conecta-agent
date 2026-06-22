@@ -5,7 +5,9 @@ export type AgentErrorType =
   | "max_steps_exceeded"
   | "tool_timeout"
   | "tool_error"
-  | "tool_empty_result";
+  | "tool_empty_result"
+  | "quota_exceeded"; // T5: Gemini 429 prepayment credits depleted
+
 
 export async function logAgentError(
   supabase: SupabaseClient,

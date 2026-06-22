@@ -27,23 +27,34 @@ const BLOCKED_PATTERN = new RegExp(
   "gi"
 );
 
+// T3: Cap de output
+const MAX_ROWS = 20;
+const MAX_CHARS = 6000;
+
 const schema = z.object({
   sql_query: z
     .string()
     .describe(
       "SQL SELECT query against student-specific tables. Must include profile_id filter for security. " +
-        `Allowed tables: ${ALLOWED_TABLES.join(", ")}.`
+        `Allowed tables: ${ALLOWED_TABLES.join(", ")}. ` +
+        "Always filter by profile_id in the WHERE clause."
     ),
   profile_id: z.string().uuid().describe("UUID of the active student profile"),
 });
 
+// T4: Description rica
+const TOOL_DESCRIPTION =
+  "Executes a read-only SQL SELECT against student personal data tables. " +
+  "USE for: checking student applications, ENEM scores, income, preferences, favorites, and opportunity matches. " +
+  `Allowed tables: ${ALLOWED_TABLES.join(", ")}. ` +
+  "DO NOT USE for: educational catalog data (use query_educational_catalog); document content (use download_knowledge_document). " +
+  "Input: SQL SELECT with mandatory profile_id filter + profile_id UUID. " +
+  "Returns: { results: [...], count: N } or an actionable error.";
+
 export function createGetStudentContext(supabase: SupabaseClient): DynamicStructuredTool {
   return new DynamicStructuredTool({
     name: "get_student_context",
-    description:
-      "Executes a read-only SQL query against student personal data tables. " +
-      "The query MUST contain the profile_id to enforce row-level security. " +
-      "Use for applications, scores, income, preferences.",
+    description: TOOL_DESCRIPTION,
     schema,
     func: async ({ sql_query, profile_id }) => {
       BLOCKED_PATTERN.lastIndex = 0;
@@ -54,6 +65,7 @@ export function createGetStudentContext(supabase: SupabaseClient): DynamicStruct
       if (!sql_query.includes(profile_id)) {
         return JSON.stringify({
           error: "Security: query must contain profile_id for row-level enforcement.",
+          hint: `Add WHERE profile_id = '${profile_id}' (or equivalent) to your query.`,
         });
       }
 
@@ -63,6 +75,7 @@ export function createGetStudentContext(supabase: SupabaseClient): DynamicStruct
       if (!hasAllowedTable) {
         return JSON.stringify({
           error: `Security: query must reference one of the allowed tables: ${ALLOWED_TABLES.join(", ")}.`,
+          hint: "For educational catalog data, use query_educational_catalog instead.",
         });
       }
 
@@ -71,10 +84,20 @@ export function createGetStudentContext(supabase: SupabaseClient): DynamicStruct
       });
 
       if (error) {
-        return JSON.stringify({ error: `Database error: ${error.message}` });
+        return JSON.stringify({
+          error: `Database error: ${error.message}`,
+          hint: `Check column names against the schema. Allowed tables: ${ALLOWED_TABLES.join(", ")}.`,
+        });
       }
 
-      return JSON.stringify({ results: data ?? [], count: (data ?? []).length });
+      // T3: Cap de linhas e chars
+      const rows = data ?? [];
+      const capped = rows.slice(0, MAX_ROWS);
+      let output = JSON.stringify({ results: capped, count: rows.length });
+      if (output.length > MAX_CHARS) {
+        output = output.slice(0, MAX_CHARS) + `... [TRUNCATED — first ${capped.length} of ${rows.length} rows]`;
+      }
+      return output;
     },
   });
 }

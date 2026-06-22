@@ -97,8 +97,31 @@ export async function getSchemaContext(supabase: SupabaseClient): Promise<string
     })
     .join("\n\n");
 
-  _schemaCache = { ddl, expiresAt: now + 5 * 60 * 1000 };
-  return ddl;
+  // T2: Grounding de valores — busca DISTINCT das colunas categóricas de v_unified_opportunities.
+  // Mata invenção de valores como 'Graduação', 'curso', 'Paraíba' grafado errado, etc.
+  const categoricalCols = ["type", "opportunity_type", "category", "location"];
+  const valueLines: string[] = [];
+  for (const col of categoricalCols) {
+    const { data: valData } = await supabase.rpc("execute_readonly_query", {
+      query_text: `SELECT DISTINCT ${col} FROM v_unified_opportunities WHERE ${col} IS NOT NULL ORDER BY ${col} LIMIT 30`,
+    });
+    if (valData && Array.isArray(valData) && valData.length > 0) {
+      const vals = (valData as Record<string, unknown>[])
+        .map((r) => r[col])
+        .filter(Boolean)
+        .map((v) => `'${v}'`)
+        .join(", ");
+      if (vals) valueLines.push(`  ${col} ∈ {${vals}}`);
+    }
+  }
+  const groundingBlock =
+    valueLines.length > 0
+      ? `\n\n-- VALORES VÁLIDOS em v_unified_opportunities (não invente outros):\n${valueLines.join("\n")}`
+      : "";
+
+  const fullDdl = ddl + groundingBlock;
+  _schemaCache = { ddl: fullDdl, expiresAt: now + 5 * 60 * 1000 };
+  return fullDdl;
 }
 
 const FEW_SHOT_TOKEN_CAP = 2000; // ~8-10 examples
@@ -177,16 +200,26 @@ Quando você mencionar uma oportunidade ou instituição específica que encontr
 
 Inclua links apenas quando tiver o ID real retornado pela ferramenta. Nunca invente IDs.`;
 
-  return promptRow.system_instruction
+  let built = promptRow.system_instruction
     .replace("{{SCHEMA_CONTEXT}}", schemaContext)
     .replace(
       "{{AVAILABLE_TOOLS}}",
       "query_educational_catalog, get_student_context, download_knowledge_document"
     )
-    .replace(/\{\{CURRENT_DATETIME\}\}/g, now)
-    .replace("{{LEARNING_EXAMPLES}}", learningExamplesBlock)
-    + smartLinksInstruction;
+    .replace(/\{\{CURRENT_DATETIME\}\}/g, now);
+
+  // T1: Injeção resiliente de learning_examples.
+  // Se o placeholder existe no template, substitui normalmente.
+  // Se não existe (ex.: backoffice removeu), APPENDE o bloco ao final em vez de descartá-lo.
+  if (built.includes("{{LEARNING_EXAMPLES}}")) {
+    built = built.replace("{{LEARNING_EXAMPLES}}", learningExamplesBlock);
+  } else if (learningExamplesBlock) {
+    built = built + "\n\n" + learningExamplesBlock;
+  }
+
+  return built + smartLinksInstruction;
 }
+
 
 export function buildLeanContext(params: LeanContextParams): string {
   const lines: string[] = [];
