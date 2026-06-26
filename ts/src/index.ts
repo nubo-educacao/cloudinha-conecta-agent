@@ -65,10 +65,12 @@ app.post("/chat", async (req: Request, res: Response) => {
         for await (const event of runPipeline(pipelineRequest)) {
           res.write(serializeEvent(event));
         }
+        // Emit intent_metadata: if open_drawer=false, signal pulsate instead
         res.write(
           serializeEvent({
             type: "intent_metadata",
             open_drawer: pipelineIntent.open_drawer,
+            pulsate: !pipelineIntent.open_drawer,
             delay_ms: pipelineIntent.delay_ms,
           })
         );
@@ -79,13 +81,14 @@ app.post("/chat", async (req: Request, res: Response) => {
         if (resObj.type !== "system_ack") {
           const contentText = typeof resObj.message === "string" ? resObj.message : JSON.stringify(result);
           res.write(serializeEvent({ type: "text", content: contentText }));
-          if (resObj.open_drawer !== undefined) {
-            res.write(serializeEvent({
-              type: "intent_metadata",
-              open_drawer: resObj.open_drawer,
-              delay_ms: resObj.delay_ms ?? 0,
-            }));
-          }
+          // Always emit intent_metadata for direct-path responses (tutorial, etc.)
+          const openDrawer = resObj.open_drawer ?? false;
+          res.write(serializeEvent({
+            type: "intent_metadata",
+            open_drawer: openDrawer,
+            pulsate: !openDrawer,
+            delay_ms: resObj.delay_ms ?? 0,
+          }));
         }
       }
     } else {
