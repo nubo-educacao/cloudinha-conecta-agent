@@ -28,6 +28,7 @@ export interface ErrorEvent {
 export interface IntentMetadataEvent {
   type: "intent_metadata";
   open_drawer: boolean;
+  pulsate?: boolean;
   delay_ms: number;
 }
 
