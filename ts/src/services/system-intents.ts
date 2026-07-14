@@ -85,12 +85,23 @@ async function resolveIntentFromDB(
   );
 }
 
+// Fallbacks usados apenas quando não há row correspondente em `system_intents` para o
+// comando. Qualquer comando fora deste mapa (page_context, submit, tutorial,
+// explain_match, e qualquer comando futuro cadastrado só no DB) resolve puramente via
+// `resolveIntentFromDB`, sem fallback e sem necessidade de código novo — ver ADR-0013/ADR-0029.
+const FALLBACKS: Record<string, (request: ChatRequest) => SystemIntentAction> = {
+  step_change: buildStepChangeFallback,
+  validation_error: buildValidationErrorFallback,
+  welcome_back: () => buildWelcomeBackFallback(),
+};
+
 export async function handleSystemIntent(
   request: ChatRequest,
   supabase: SupabaseClient
 ): Promise<Record<string, unknown> | SystemIntentAction> {
   const command = request.chatInput.trim().toLowerCase();
 
+  // Meta-comandos: lógica própria não vinda de `system_intents`, permanecem hardcoded.
   if (command === "ping") {
     return { type: "pong", status: "ok" };
   }
@@ -103,35 +114,15 @@ export async function handleSystemIntent(
     return fetchStarters(supabase, request.ui_context?.current_page);
   }
 
-  if (command === "page_context") {
-    return resolveIntentFromDB(supabase, "page_context", request);
-  }
-
-  if (command === "step_change") {
-    return resolveIntentFromDB(supabase, "step_change", request, () =>
-      buildStepChangeFallback(request)
-    );
-  }
-
-  if (command === "validation_error") {
-    return resolveIntentFromDB(supabase, "validation_error", request, () =>
-      buildValidationErrorFallback(request)
-    );
-  }
-
-  if (command === "welcome_back") {
-    return resolveIntentFromDB(supabase, "welcome_back", request, buildWelcomeBackFallback);
-  }
-
-  if (command === "submit") {
-    return resolveIntentFromDB(supabase, "submit", request);
-  }
-
-  if (command === "tutorial") {
-    return resolveIntentFromDB(supabase, "tutorial", request);
-  }
-
-  return { type: "system_ack", message: `Unknown intent: ${command}` };
+  // Dispatch genérico DB-driven (ADR-0013/ADR-0029): qualquer outro comando resolve
+  // diretamente da tabela `system_intents`, usando o fallback hardcoded acima quando existir.
+  const fallback = FALLBACKS[command];
+  return resolveIntentFromDB(
+    supabase,
+    command,
+    request,
+    fallback ? () => fallback(request) : undefined
+  );
 }
 
 async function fetchStarters(

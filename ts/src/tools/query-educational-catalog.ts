@@ -47,6 +47,18 @@ const TOOL_DESCRIPTION =
   "Input: valid SQL SELECT. Columns must match {{SCHEMA_CONTEXT}}. " +
   "Returns: { results: [...], count: N } or an actionable error with valid columns listed.";
 
+// ADR-0015: auto-correção determinística em vez de depender do LLM re-tentar por conta
+// própria (na prática ele nem sempre re-chama a tool após um erro, mesmo instruído a
+// fazê-lo). Remove a coluna inexistente do SELECT e tenta a query de novo, uma única vez.
+function stripColumnFromSelect(sql: string, columnName: string): string {
+  const escaped = columnName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let result = sql.replace(new RegExp(`,\\s*${escaped}\\b`, "i"), "");
+  if (result !== sql) return result;
+  result = sql.replace(new RegExp(`\\b${escaped}\\s*,\\s*`, "i"), "");
+  if (result !== sql) return result;
+  return sql.replace(new RegExp(`\\b${escaped}\\b`, "i"), "*");
+}
+
 export function createQueryEducationalCatalog(supabase: SupabaseClient): DynamicStructuredTool {
   return new DynamicStructuredTool({
     name: "query_educational_catalog",
@@ -65,9 +77,26 @@ export function createQueryEducationalCatalog(supabase: SupabaseClient): Dynamic
         });
       }
 
-      const { data, error } = await supabase.rpc("execute_readonly_query", {
+      let { data, error } = await supabase.rpc("execute_readonly_query", {
         query_text: cleanedQuery,
       });
+
+      // ADR-0015: auto-correção — se o erro for "column X does not exist", remove a
+      // coluna inexistente do SELECT e tenta a mesma query de novo, uma única vez,
+      // antes de expor o erro ao LLM.
+      if (error) {
+        const missingColMatch = error.message.match(/column "?(\w+)"? does not exist/i);
+        if (missingColMatch) {
+          const retryQuery = stripColumnFromSelect(cleanedQuery, missingColMatch[1]);
+          if (retryQuery !== cleanedQuery) {
+            const retry = await supabase.rpc("execute_readonly_query", {
+              query_text: retryQuery,
+            });
+            data = retry.data;
+            error = retry.error;
+          }
+        }
+      }
 
       if (error) {
         // T3: Dica acionável em erro de coluna/sintaxe

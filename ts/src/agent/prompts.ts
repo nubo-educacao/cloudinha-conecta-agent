@@ -35,7 +35,26 @@ const DDL_TABLES = [
   "user_profiles",
   "user_enem_scores",
   "student_applications",
+  "user_opportunity_matches",
 ];
+
+// ADR-0015: Entity Mapping via DDL Injection — o propósito de cada tabela é injetado
+// junto do DDL para reduzir confusão entre tabelas com colunas de nome parecido
+// (ex.: `description` existe em partner_opportunities mas não em v_unified_opportunities).
+// Isto é orientação POSITIVA ("use esta tabela para X"), não uma regra negativa.
+const TABLE_PURPOSE: Record<string, string> = {
+  v_unified_opportunities:
+    "Catálogo público unificado (Sisu + ProUni + Parceiros). Use para QUALQUER busca geral de oportunidades: curso, instituição, tipo, status, vagas, localização.",
+  partner_opportunities:
+    "Dados brutos específicos de UMA oportunidade de parceiro (ex.: description). Só consulte aqui quando já tiver o id do parceiro e precisar de um campo que não existe em v_unified_opportunities.",
+  partners: "Cadastro de instituições parceiras.",
+  knowledge_documents:
+    "Metadados de documentos/editais (título, storage_path). Use para achar o storage_path antes de chamar download_knowledge_document.",
+  important_dates: "Datas importantes do calendário educacional (Sisu, ProUni, editais).",
+  v_unified_institutions: "Catálogo unificado de instituições (MEC + parceiras).",
+  user_opportunity_matches:
+    "Match Score e explicação de compatibilidade do aluno com uma oportunidade. SEMPRE consultar via get_student_context (NUNCA query_educational_catalog), filtrando por profile_id e unified_opportunity_id.",
+};
 
 // Schema cache: 5 minute TTL
 let _schemaCache: { ddl: string; expiresAt: number } | null = null;
@@ -93,13 +112,28 @@ export async function getSchemaContext(supabase: SupabaseClient): Promise<string
           (c) => `  ${c.column_name} ${c.data_type}${c.is_nullable === "NO" ? " NOT NULL" : ""}`
         )
         .join(",\n");
-      return `-- TABLE: ${table}\n(\n${colDefs}\n)`;
+      const purpose = TABLE_PURPOSE[table];
+      const purposeLine = purpose ? `-- USO: ${purpose}\n` : "";
+      return `-- TABLE: ${table}\n${purposeLine}(\n${colDefs}\n)`;
     })
     .join("\n\n");
 
+  // ADR-0015: BOOLEAN columns grounding — derivado do data_type real (não hardcoded),
+  // então nunca fica desatualizado. Evita comparações inválidas tipo `coluna > 0` numa
+  // coluna boolean.
+  const allRows = data as { table_name: string; column_name: string; data_type: string }[];
+  const booleanCols = allRows
+    .filter((r) => r.data_type === "boolean")
+    .map((r) => `${r.table_name}.${r.column_name}`);
+  const booleanBlock =
+    booleanCols.length > 0
+      ? `\n\n-- COLUNAS BOOLEAN (comparar com = true / = false — NUNCA com > 0 ou outro operador numérico):\n  ${booleanCols.join(", ")}`
+      : "";
+
   // T2: Grounding de valores — busca DISTINCT das colunas categóricas de v_unified_opportunities.
-  // Mata invenção de valores como 'Graduação', 'curso', 'Paraíba' grafado errado, etc.
-  const categoricalCols = ["type", "opportunity_type", "category", "location"];
+  // Derivado dos dados reais (auto-corrige se um valor for descontinuado, ex.: 'approved' → 'opened'),
+  // em vez de hardcodar o valor válido em prosa.
+  const categoricalCols = ["type", "opportunity_type", "category", "location", "status"];
   const valueLines: string[] = [];
   for (const col of categoricalCols) {
     const { data: valData } = await supabase.rpc("execute_readonly_query", {
@@ -119,7 +153,7 @@ export async function getSchemaContext(supabase: SupabaseClient): Promise<string
       ? `\n\n-- VALORES VÁLIDOS em v_unified_opportunities (não invente outros):\n${valueLines.join("\n")}`
       : "";
 
-  const fullDdl = ddl + groundingBlock;
+  const fullDdl = ddl + booleanBlock + groundingBlock;
   _schemaCache = { ddl: fullDdl, expiresAt: now + 5 * 60 * 1000 };
   return fullDdl;
 }
@@ -200,6 +234,26 @@ Quando você mencionar uma oportunidade ou instituição específica que encontr
 
 Inclua links apenas quando tiver o ID real retornado pela ferramenta. Nunca invente IDs.`;
 
+  // ADR-0015: Entity Mapping — mapeamento POSITIVO de conceito de negócio → coluna real.
+  // Regras sobre valores válidos, tipos boolean e propósito de cada tabela vêm do
+  // schemaContext (DDL real, ver getSchemaContext), não são hardcoded aqui — isso evita
+  // que a instrução fique desatualizada quando o schema/dados mudam (ex.: status
+  // 'approved' → 'opened').
+  const entityMappingInstruction = `
+## Dicionário de Dados e Mapeamento de Entidades
+Conceito de negócio → coluna real em \`v_unified_opportunities\` (para nomes de coluna, tipos, valores válidos e qual tabela usar, SEMPRE confie no schema acima — ele reflete o banco real e é atualizado a cada consulta):
+- **Nome do curso/programa**: coluna \`title\`.
+- **Nome da instituição**: coluna \`provider_name\`.
+- **Tipo da oportunidade**: coluna \`type\`.
+- **Match Score e explicação de compatibilidade**: NÃO existem em \`v_unified_opportunities\`. Para explicar por que uma oportunidade combina com o aluno, use \`get_student_context\` para consultar \`user_opportunity_matches\` (colunas \`match_score\`, \`match_details\`) filtrando por \`profile_id\` e \`unified_opportunity_id\`.
+
+## Recuperação de Erros de Tool (genérico — vale para QUALQUER tabela, não só as citadas acima)
+Se uma tool retornar um campo \`error\` (ex.: "column does not exist"), isso NÃO é o fim do turno: remova a coluna inválida da query usando o schema acima como referência e chame a tool DE NOVO no mesmo turno, antes de responder ao usuário. Só desista e explique o problema ao usuário após uma segunda tentativa também falhar.`;
+
+  const editalRulesInstruction = `
+## Regras de Editais (Sisu/ProUni)
+Para QUALQUER dúvida sobre regras, prazos ou critérios do Sisu ou ProUni, primeiro localize o documento correspondente via \`query_educational_catalog\` (tabela \`knowledge_documents\`) e leia o conteúdo com \`download_knowledge_document\`. É PROIBIDO responder com conhecimento paramétrico sobre regras de editais.`;
+
   let built = promptRow.system_instruction
     .replace("{{SCHEMA_CONTEXT}}", schemaContext)
     .replace(
@@ -217,7 +271,7 @@ Inclua links apenas quando tiver o ID real retornado pela ferramenta. Nunca inve
     built = built + "\n\n" + learningExamplesBlock;
   }
 
-  return built + smartLinksInstruction;
+  return built + smartLinksInstruction + entityMappingInstruction + editalRulesInstruction;
 }
 
 

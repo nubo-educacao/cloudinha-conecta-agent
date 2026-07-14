@@ -34,11 +34,16 @@ describe("SessionService", () => {
     );
   });
 
-  it("getRecentMessages returns messages in ascending order (oldest first)", async () => {
-    const messages = [
-      { sender: "user", content: "Olá" },
-      { sender: "cloudinha", content: "Oi!" },
+  it("getRecentMessages returns the N most recent messages, in chronological order", async () => {
+    // O service busca DESC (mais recentes primeiro) + limit, depois reverte em JS
+    // para ordem cronológica — isso é o que garante pegar o CONTEXTO RECENTE da
+    // conversa, não as mensagens mais antigas da sessão (ver comentário em session.ts).
+    // O mock abaixo representa o que o banco retorna sob ORDER BY created_at DESC:
+    // mais recente primeiro.
+    const messagesDescFromDb = [
       { sender: "user", content: "Tenho dúvida" },
+      { sender: "cloudinha", content: "Oi!" },
+      { sender: "user", content: "Olá" },
     ];
 
     const supabase = {
@@ -46,7 +51,7 @@ describe("SessionService", () => {
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
         order: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockResolvedValue({ data: messages, error: null }),
+        limit: vi.fn().mockResolvedValue({ data: messagesDescFromDb, error: null }),
       }),
     } as unknown as SupabaseClient;
 
@@ -54,12 +59,14 @@ describe("SessionService", () => {
     const result = await svc.getRecentMessages(5);
 
     expect(result).toHaveLength(3);
+    // Após o .reverse(), a mensagem mais ANTIGA fica em result[0] (ordem cronológica)
     expect(result[0].sender).toBe("user");
     expect(result[0].content).toBe("Olá");
+    expect(result[2].content).toBe("Tenho dúvida");
 
-    // Verify ascending order was requested
+    // Verify DESC order was requested (busca as mais recentes, não as mais antigas)
     const orderCall = (supabase.from as ReturnType<typeof vi.fn>).mock.results[0].value.order;
-    expect(orderCall).toHaveBeenCalledWith("created_at", { ascending: true });
+    expect(orderCall).toHaveBeenCalledWith("created_at", { ascending: false });
   });
 
   it("getRecentMessages returns empty array on error", async () => {

@@ -35,7 +35,19 @@ export function createDownloadKnowledgeDocument(supabase: SupabaseClient): Dynam
         .from("knowledge-base")
         .download(storage_path);
 
-      if (error || !data) {
+      if (error) {
+        // Erro real do Storage (permissão, rede, etc.) — surface a mensagem real,
+        // distinto de "não achou o documento" (ver bloco abaixo).
+        return JSON.stringify({
+          error: `Storage error: ${error.message}`,
+          hint:
+            "To find the correct path, use query_educational_catalog with: " +
+            "SELECT title, storage_path FROM knowledge_documents WHERE title ILIKE '%<keyword>%' LIMIT 5. " +
+            "Then use the exact storage_path value returned.",
+        });
+      }
+
+      if (!data) {
         // T3: Dica acionável — instrui o agente a buscar o storage_path via query
         return JSON.stringify({
           error: `Document not found at path: '${storage_path}'.`,

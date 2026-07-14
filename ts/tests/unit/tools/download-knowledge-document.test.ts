@@ -46,6 +46,6 @@ describe("download_knowledge_document", () => {
     const result = await tool.invoke({ storage_path: "documents/missing.md" });
     const parsed = JSON.parse(result);
 
-    expect(parsed.error).toMatch(/document not found/);
+    expect(parsed.error).toMatch(/document not found/i);
   });
 });
