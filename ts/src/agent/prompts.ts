@@ -25,11 +25,13 @@ export interface LeanContextParams {
 }
 
 // DDL tables to discover
-const DDL_TABLES = [
+export const DDL_TABLES = [
   "v_unified_opportunities",
   "partner_opportunities",
   "partners",
   "knowledge_documents",
+  "knowledge_keywords",
+  "knowledge_document_opportunities",
   "important_dates",
   "v_unified_institutions",
   "user_profiles",
@@ -42,14 +44,18 @@ const DDL_TABLES = [
 // junto do DDL para reduzir confusão entre tabelas com colunas de nome parecido
 // (ex.: `description` existe em partner_opportunities mas não em v_unified_opportunities).
 // Isto é orientação POSITIVA ("use esta tabela para X"), não uma regra negativa.
-const TABLE_PURPOSE: Record<string, string> = {
+export const TABLE_PURPOSE: Record<string, string> = {
   v_unified_opportunities:
     "Catálogo público unificado (Sisu + ProUni + Parceiros). Use para QUALQUER busca geral de oportunidades: curso, instituição, tipo, status, vagas, localização.",
   partner_opportunities:
-    "Dados brutos específicos de UMA oportunidade de parceiro (ex.: description). Só consulte aqui quando já tiver o id do parceiro e precisar de um campo que não existe em v_unified_opportunities.",
+    "Dados brutos específicos de UMA oportunidade de parceiro (ex.: description). Só consulte aqui quando já tiver o id do parceiro e precisar de um campo que não existe em v_unified_opportunities. Também é o ponto de partida pra achar o id de uma oportunidade pelo nome antes de buscar documentos relacionados (ver knowledge_document_opportunities).",
   partners: "Cadastro de instituições parceiras.",
   knowledge_documents:
-    "Metadados de documentos/editais (título, storage_path). Use para achar o storage_path antes de chamar download_knowledge_document.",
+    "Metadados de documentos/editais (título, description, storage_path). description já costuma responder perguntas simples sem precisar baixar o markdown. Use para achar o storage_path antes de chamar download_knowledge_document. PREFIRA filtrar via join com knowledge_document_opportunities (por partner_opportunity_id) em vez de só title ILIKE — título de edital raramente bate literalmente com o nome que o usuário usa.",
+  knowledge_keywords:
+    "Palavras-chave por documento (document_id, keyword). Use como busca alternativa quando o join por partner_opportunity_id não encontra nada ou a pergunta não cita uma oportunidade específica: JOIN knowledge_keywords kk ON kk.document_id = knowledge_documents.id WHERE kk.keyword ILIKE '%termo%'.",
+  knowledge_document_opportunities:
+    "Join N:N entre knowledge_documents e partner_opportunities — um documento pode servir a mais de uma oportunidade parceira (ex.: um edital único que cobre duas modalidades de bolsa da mesma instituição). Para achar os documentos de uma oportunidade específica: JOIN knowledge_document_opportunities kdo ON kdo.document_id = kd.id WHERE kdo.partner_opportunity_id = <id resolvido em partner_opportunities>.",
   important_dates: "Datas importantes do calendário educacional (Sisu, ProUni, editais).",
   v_unified_institutions: "Catálogo unificado de instituições (MEC + parceiras).",
   user_opportunity_matches:
@@ -251,8 +257,12 @@ Conceito de negócio → coluna real em \`v_unified_opportunities\` (para nomes 
 Se uma tool retornar um campo \`error\` (ex.: "column does not exist"), isso NÃO é o fim do turno: remova a coluna inválida da query usando o schema acima como referência e chame a tool DE NOVO no mesmo turno, antes de responder ao usuário. Só desista e explique o problema ao usuário após uma segunda tentativa também falhar.`;
 
   const editalRulesInstruction = `
-## Regras de Editais (Sisu/ProUni)
-Para QUALQUER dúvida sobre regras, prazos ou critérios do Sisu ou ProUni, primeiro localize o documento correspondente via \`query_educational_catalog\` (tabela \`knowledge_documents\`) e leia o conteúdo com \`download_knowledge_document\`. É PROIBIDO responder com conhecimento paramétrico sobre regras de editais.`;
+## Regras de Editais e Base de Conhecimento (Sisu/ProUni/Parceiros)
+Para QUALQUER dúvida sobre regras, prazos, critérios ou conteúdo de edital, é PROIBIDO responder com conhecimento paramétrico — sempre localize o documento na base de conhecimento primeiro. Tente nesta ordem, usando \`query_educational_catalog\`:
+1. Se a pergunta cita uma oportunidade/parceiro/bolsa específica, resolva o id em \`partner_opportunities\` pelo nome e busque documentos via join com \`knowledge_document_opportunities\` (\`WHERE kdo.partner_opportunity_id = <id>\`).
+2. Se esse join não retornar nada, ou a pergunta não citar uma oportunidade específica, busque em \`knowledge_keywords\` pelo termo da pergunta.
+3. Só então, como último recurso, busque por \`title ILIKE\` direto em \`knowledge_documents\`.
+Depois de achar o documento: se \`description\` já responde à pergunta, use-a direto — só chame \`download_knowledge_document\` (com o \`storage_path\` exato) quando precisar do conteúdo completo do markdown.`;
 
   let built = promptRow.system_instruction
     .replace("{{SCHEMA_CONTEXT}}", schemaContext)
