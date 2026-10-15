@@ -1,0 +1,131 @@
+# NUB-RD-86 (C1) / ADR-NUBO-DEPLOY-01 — deploy da Cloudinha com a config do Snaps.
+#
+# Substitui o trigger do Cloud Build `deploy-agente-prod`, cujas substitutions
+# (_SUPABASE_URL, _SUPABASE_SERVICE_KEY, ...) já apontaram para o banco errado
+# duas vezes. Agora:
+#   - a identidade no GCP vem do OIDC do GitHub (Workload Identity Federation,
+#     provider restrito a este repositório + master); nenhuma chave JSON;
+#   - a config vem do environment PROD do Snaps (repo_name cloudinha-conecta-agent)
+#     e é aplicada com `--env-vars-file`, que SUBSTITUI o conjunto inteiro;
+#   - antes do deploy, SUPABASE_URL tem de ser o projeto de PRODUÇÃO;
+#   - depois do deploy, /health tem de responder 200; senão o tráfego volta para
+#     a revisão anterior e o job falha.
+#
+# CORTE (humano): desabilitar o trigger `deploy-agente-prod` ANTES de mergear o
+# PR que traz este arquivo, para não haver deploy duplo. Rollback: reabilitar o
+# trigger (e reverter o PR).
+#
+# GitHub Environment `production`:
+#   vars: GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_DEPLOY_SA,
+#         SNAPS_API_URL_MATERIALIZE, SNAPS_PROJECT_ID, SNAPS_ENVIRONMENT_ID
+name: deploy-production
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    env:
+      GCP_PROJECT: gen-lang-client-0831624563
+      REGION: southamerica-east1
+      SERVICE: cloudinha-conecta-agent
+      IMAGE: gcr.io/gen-lang-client-0831624563/cloudinha-conecta-agent
+      SUPABASE_REF_PROD: aifzkybxhmefbirujvdg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Materializar configuração do Snaps (PROD)
+        env:
+          MATERIALIZE_URL: ${{ vars.SNAPS_API_URL_MATERIALIZE }}
+          SNAPS_PROJECT_ID: ${{ vars.SNAPS_PROJECT_ID }}
+          SNAPS_ENVIRONMENT_ID: ${{ vars.SNAPS_ENVIRONMENT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          for v in MATERIALIZE_URL SNAPS_PROJECT_ID SNAPS_ENVIRONMENT_ID; do
+            [ -n "${!v:-}" ] || { echo "::error::$v não definido no GitHub Environment 'production'"; exit 1; }
+          done
+          oidc=$(curl -sS --fail-with-body \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=snaps-api-materialize" | jq -r .value)
+          echo "::add-mask::$oidc"
+          ticket=$(curl -sS --fail-with-body -X POST "$MATERIALIZE_URL/materialization/tickets" \
+            -H "Authorization: Bearer $oidc" -H 'Content-Type: application/json' \
+            -d "$(jq -cn --arg p "$SNAPS_PROJECT_ID" --arg e "$SNAPS_ENVIRONMENT_ID" '{project_id: $p, environment_id: $e}')" \
+            | jq -r .ticket)
+          echo "::add-mask::$ticket"
+          curl -sS --fail-with-body -X POST "$MATERIALIZE_URL/materialization/redeem" \
+            -H 'Accept: text/plain' -H 'Content-Type: application/json' \
+            -d "$(jq -cn --arg t "$ticket" '{ticket: $t}')" \
+            -D "$RUNNER_TEMP/snaps.headers" -o "$RUNNER_TEMP/snaps.env"
+          grep -i '^x-snaps-' "$RUNNER_TEMP/snaps.headers" || true
+          # Falha ANTES de escrever se SUPABASE_URL não for o projeto de produção.
+          node ts/scripts/ci/materialize-cloudrun-env.mjs \
+            "$RUNNER_TEMP/snaps.env" "$RUNNER_TEMP/cloudrun-env.yaml" "$SUPABASE_REF_PROD"
+          rm -f "$RUNNER_TEMP/snaps.env" "$RUNNER_TEMP/snaps.headers"
+
+      - name: Autenticar no GCP (Workload Identity Federation, sem chave)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build e push da imagem
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker gcr.io --quiet
+          docker build -f ts/Dockerfile -t "$IMAGE:${GITHUB_SHA::7}" ./ts
+          docker push "$IMAGE:${GITHUB_SHA::7}"
+
+      - name: Deploy no Cloud Run
+        id: deploy
+        run: |
+          set -euo pipefail
+          anterior=$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$GCP_PROJECT" \
+            --format='value(status.latestReadyRevisionName)')
+          echo "anterior=$anterior" >> "$GITHUB_OUTPUT"
+          echo "revisão anterior: $anterior"
+          # Sem --allow-unauthenticated: o serviço já é público, e mudar a política
+          # de IAM exigiria um papel acima de run.developer.
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE:${GITHUB_SHA::7}" \
+            --region "$REGION" --project "$GCP_PROJECT" \
+            --env-vars-file "$RUNNER_TEMP/cloudrun-env.yaml" \
+            --quiet
+
+      - name: Fumaça (/health) com rollback automático
+        run: |
+          set -euo pipefail
+          url=$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$GCP_PROJECT" --format='value(status.url)')
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' "$url/health" || echo 000)
+            [ "$code" = "200" ] && { echo "ok: $url/health 200"; exit 0; }
+            echo "tentativa $i: HTTP $code"; sleep 10
+          done
+          echo "::error::/health não respondeu 200; voltando o tráfego para ${{ steps.deploy.outputs.anterior }}"
+          gcloud run services update-traffic "$SERVICE" --region "$REGION" --project "$GCP_PROJECT" \
+            --to-revisions "${{ steps.deploy.outputs.anterior }}=100" --quiet
+          exit 1
+
+      - name: Limpar
+        if: always()
+        run: rm -f "$RUNNER_TEMP/snaps.env" "$RUNNER_TEMP/snaps.headers" "$RUNNER_TEMP/cloudrun-env.yaml"
